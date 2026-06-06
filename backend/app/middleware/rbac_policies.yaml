@@ -1,0 +1,58 @@
+# =============================================================================
+# Company Brain – Role-Based Access Control (RBAC) Policy Definitions
+# =============================================================================
+# Each role maps to a set of allowed actions and optional resource constraints.
+# An empty resource list under an action means the action applies to ALL resources.
+# =============================================================================
+
+roles:
+  admin:
+    description: "Full platform administrator with unrestricted access"
+    actions:
+      read:
+        resources: []          # all resources
+      write:
+        resources: []
+      execute_workflow:
+        resources: []
+      approve_action:
+        resources: []
+      manage_connectors:
+        resources: []
+
+  manager:
+    description: "Team manager – can read, write, execute workflows, and approve"
+    actions:
+      read:
+        resources: []
+      write:
+        resources: []
+      execute_workflow:
+        resources: []
+      approve_action:
+        resources:
+          - "workflows"
+          - "ingestion"
+
+  engineer:
+    description: "Engineer – can read, write, and execute workflows"
+    actions:
+      read:
+        resources: []
+      write:
+        resources:
+          - "documents"
+          - "workflows"
+          - "connectors"
+      execute_workflow:
+        resources:
+          - "workflows"
+
+  viewer:
+    description: "Read-only access across the platform"
+    actions:
+      read:
+        resources: []
+
+# Default role assigned to authenticated users with no explicit role
+default_role: viewer

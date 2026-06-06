@@ -1,0 +1,84 @@
+# =============================================================================
+# Company Brain – Root .gitignore
+# =============================================================================
+
+# ── Secrets & environment ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.jks
+*.p12
+*.keystore
+*.truststore
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.whl
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
+
+# ── Runtime data ─────────────────────────────────────────────────────────────
+backend/logs/
+
+# ── Node.js / Next.js ───────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+dist/
+.turbo/
+.vercel/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── Docker ───────────────────────────────────────────────────────────────────
+docker-compose.override.yml
+*.tar
+*.gz
+
+# ── Vault ────────────────────────────────────────────────────────────────────
+vault/data/
+vault/file/
+
+# ── Neo4j ────────────────────────────────────────────────────────────────────
+neo4j/data/
+neo4j/logs/
+
+# ── Kafka / ZooKeeper ───────────────────────────────────────────────────────
+kafka/data/
+zookeeper/data/
+kafka/secrets/
+
+# ── Weaviate ─────────────────────────────────────────────────────────────────
+weaviate/data/
+
+# ── IDE / Editor ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+*.DS_Store
+Desktop.ini

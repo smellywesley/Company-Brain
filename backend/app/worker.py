@@ -1,0 +1,392 @@
+"""
+Celery background worker configuration and tasks.
+
+Handles long-running asynchronous operations:
+- Ingestion processing (vector embedding)
+- Skill discovery (clustering & LLM synthesis)
+- Knowledge Graph population
+"""
+
+import asyncio
+import logging
+import os
+import uuid
+
+from celery import Celery
+from asgiref.sync import async_to_sync
+
+logger = logging.getLogger(__name__)
+
+# Initialize Celery app
+redis_url = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+celery_app = Celery("company_brain", broker=redis_url, backend=redis_url)
+
+celery_app.conf.update(
+    task_serializer="json",
+    accept_content=["json"],
+    result_serializer="json",
+    timezone="UTC",
+    enable_utc=True,
+    task_track_started=True,
+    task_time_limit=3600,  # 1 hour max per task
+)
+
+
+def _run_async(coro):
+    """Helper to run async code inside a sync Celery task."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+@celery_app.task(bind=True, name="tasks.process_ingestion_batch")
+def process_ingestion_batch(self, tenant_id_str: str, documents: list[dict]):
+    """Process a batch of ingested documents: embed and upsert to vector/graph stores."""
+    logger.info("Celery: Processing ingestion batch of %d docs for tenant %s", len(documents), tenant_id_str)
+    
+    async def _do_process():
+        # 1. Init DB
+        from app.db.database import get_db_session
+        from app.services.knowledge_graph.entity_extractor import EntityExtractor
+        from app.services.knowledge_graph.neo4j_store import Neo4jStore
+        from app.services.knowledge_graph.ingestion_hook import KnowledgeGraphIngestionHook
+        from app.agents.llm_adapter import LLMAdapter
+        
+        # 2. Extract and upsert to Knowledge Graph
+        try:
+            kg_store = Neo4jStore()
+            kg_store.connect()
+            llm = LLMAdapter(provider="gemini", api_key=os.getenv("LLM_API_KEY", ""))
+            extractor = EntityExtractor(llm=llm)
+            hook = KnowledgeGraphIngestionHook(extractor=extractor, neo4j_store=kg_store)
+            
+            entities_created = await hook.process_documents(tenant_id_str, documents)
+            logger.info("Celery: KG hook created %d entities.", entities_created)
+        except Exception as exc:
+            logger.error("Celery: KG processing failed: %s", exc)
+        finally:
+            kg_store.close()
+
+        # Note: Vector embedding upsert would go here using TenantIsolatedWeaviateStore
+
+    return _run_async(_do_process())
+
+
+@celery_app.task(bind=True, name="tasks.trigger_skill_discovery")
+def trigger_skill_discovery(self, tenant_id_str: str, documents: list[dict]):
+    """Run the skill discovery pipeline on a new batch of documents."""
+    logger.info("Celery: Running skill discovery for tenant %s", tenant_id_str)
+    
+    async def _do_discovery():
+        from app.db.database import get_db_session
+        from app.services.skills_generator.manager import SkillManager
+        from app.services.skills_generator.synthesizer import SkillSynthesizer
+        from app.services.skills_generator.pattern_detector import PatternDetector
+        from app.services.security.prompt_injection import AdversarialDetector
+        
+        async with get_db_session() as session:
+            manager = SkillManager(
+                db_session=session,
+                synthesizer=SkillSynthesizer(),
+                pattern_detector=PatternDetector(),
+                adversarial_detector=AdversarialDetector()
+            )
+            
+            skills_gen = await manager.run_discovery_pipeline(
+                tenant_id=uuid.UUID(tenant_id_str), 
+                documents=documents
+            )
+            return skills_gen
+
+    skills_count = _run_async(_do_discovery())
+    logger.info("Celery: Discovered %d new skills.", skills_count)
+    return skills_count
+
+
+# ── Webhook processing tasks (Sprint 2) ──────────────────────────────────────
+
+@celery_app.task(bind=True, name="tasks.process_slack_webhook_event")
+def process_slack_webhook_event(self, event_data: dict):
+    """Asynchronously process a single incoming Slack webhook event."""
+    logger.info("Celery: Processing Slack event %s", event_data.get("event_id", ""))
+    
+    async def _do_process():
+        from app.db.database import get_db_session
+        from app.db.models import Tenant
+        from sqlalchemy import select
+        from ingestion.slack_connector import SlackConnector
+        from app.services.knowledge_graph.entity_extractor import EntityExtractor
+        from app.services.knowledge_graph.neo4j_store import Neo4jStore
+        from app.services.knowledge_graph.ingestion_hook import KnowledgeGraphIngestionHook
+        from app.agents.llm_adapter import LLMAdapter
+        import os
+        
+        # 1. Resolve Tenant from Slack team_id
+        team_id = event_data.get("team_id")
+        if not team_id:
+            logger.error("Slack event missing team_id")
+            return
+            
+        async with get_db_session() as session:
+            stmt = select(Tenant)
+            result = await session.execute(stmt)
+            tenants = result.scalars().all()
+            
+            target_tenant = None
+            for tenant in tenants:
+                slack_settings = tenant.settings.get("slack", {})
+                if slack_settings.get("team_id") == team_id:
+                    target_tenant = tenant
+                    break
+                    
+            if not target_tenant:
+                if len(tenants) == 1:
+                    target_tenant = tenants[0]
+                else:
+                    logger.error("Could not map Slack team_id %s to any tenant", team_id)
+                    return
+            
+            tenant_id_str = str(target_tenant.id)
+            
+            # 2. Normalize raw event
+            event = event_data.get("event", {})
+            if event.get("type") != "message":
+                logger.info("Ignoring non-message Slack event type: %s", event.get("type"))
+                return
+                
+            raw_item = {
+                "text": event.get("text", ""),
+                "user": event.get("user", "unknown"),
+                "ts": event.get("ts", ""),
+                "_channel_id": event.get("channel", ""),
+                "_channel_name": "live_channel",
+                "thread_ts": event.get("thread_ts"),
+                "reactions": event.get("reactions", []),
+                "subtype": event.get("subtype")
+            }
+            
+            connector = SlackConnector()
+            normalized_doc = connector.normalize(raw_item)
+            
+            doc_dict = {
+                "source": normalized_doc.source,
+                "id": normalized_doc.id,
+                "author": normalized_doc.author,
+                "timestamp": normalized_doc.timestamp,
+                "content": normalized_doc.content,
+                "doc_type": normalized_doc.doc_type,
+                "sensitivity_level": normalized_doc.sensitivity_level,
+                "metadata": normalized_doc.metadata
+            }
+            
+            # 3. Process into Knowledge Graph (Neo4j)
+            try:
+                kg_store = Neo4jStore()
+                kg_store.connect()
+                llm = LLMAdapter(provider="gemini", api_key=os.getenv("LLM_API_KEY", ""))
+                extractor = EntityExtractor(llm=llm)
+                hook = KnowledgeGraphIngestionHook(extractor=extractor, neo4j_store=kg_store)
+                
+                await hook.process_documents(tenant_id_str, [doc_dict])
+            except Exception as exc:
+                logger.error("Celery webhook KG hook failed: %s", exc)
+            finally:
+                kg_store.close()
+                
+    return _run_async(_do_process())
+
+
+@celery_app.task(bind=True, name="tasks.process_github_webhook_event")
+def process_github_webhook_event(self, x_github_event: str, event_data: dict):
+    """Asynchronously process a single incoming GitHub webhook event."""
+    logger.info("Celery: Processing GitHub event type %s", x_github_event)
+    
+    async def _do_process():
+        from app.db.database import get_db_session
+        from app.db.models import Tenant
+        from sqlalchemy import select
+        from ingestion.github_connector import GitHubConnector
+        from app.services.knowledge_graph.entity_extractor import EntityExtractor
+        from app.services.knowledge_graph.neo4j_store import Neo4jStore
+        from app.services.knowledge_graph.ingestion_hook import KnowledgeGraphIngestionHook
+        from app.agents.llm_adapter import LLMAdapter
+        import os
+        
+        # 1. Resolve Tenant from repository owner
+        repo = event_data.get("repository", {})
+        owner = repo.get("owner", {}).get("login")
+        if not owner:
+            logger.error("GitHub webhook event missing repository owner")
+            return
+            
+        async with get_db_session() as session:
+            stmt = select(Tenant)
+            result = await session.execute(stmt)
+            tenants = result.scalars().all()
+            
+            target_tenant = None
+            for tenant in tenants:
+                github_settings = tenant.settings.get("github", {})
+                if github_settings.get("owner") == owner:
+                    target_tenant = tenant
+                    break
+                    
+            if not target_tenant:
+                if len(tenants) == 1:
+                    target_tenant = tenants[0]
+                else:
+                    logger.error("Could not map GitHub owner %s to any tenant", owner)
+                    return
+                    
+            tenant_id_str = str(target_tenant.id)
+            
+            # 2. Normalize GitHub Event
+            connector = GitHubConnector()
+            normalized_doc = None
+            if x_github_event == "issues":
+                issue = event_data.get("issue", {})
+                normalized_doc = connector.normalize({
+                    "_type": "issue",
+                    "id": issue.get("id"),
+                    "title": issue.get("title", ""),
+                    "body": issue.get("body", ""),
+                    "user": {"login": issue.get("user", {}).get("login", "unknown")},
+                    "created_at": issue.get("created_at", ""),
+                    "html_url": issue.get("html_url", "")
+                })
+            elif x_github_event == "pull_request":
+                pr = event_data.get("pull_request", {})
+                normalized_doc = connector.normalize({
+                    "_type": "pr",
+                    "id": pr.get("id"),
+                    "title": pr.get("title", ""),
+                    "body": pr.get("body", ""),
+                    "user": {"login": pr.get("user", {}).get("login", "unknown")},
+                    "created_at": pr.get("created_at", ""),
+                    "html_url": pr.get("html_url", "")
+                })
+                
+            if not normalized_doc:
+                logger.info("GitHub event type %s normalization not implemented for webhook, ignoring", x_github_event)
+                return
+                
+            doc_dict = {
+                "source": normalized_doc.source,
+                "id": normalized_doc.id,
+                "author": normalized_doc.author,
+                "timestamp": normalized_doc.timestamp,
+                "content": normalized_doc.content,
+                "doc_type": normalized_doc.doc_type,
+                "sensitivity_level": normalized_doc.sensitivity_level,
+                "metadata": normalized_doc.metadata
+            }
+            
+            # 3. Process into Knowledge Graph (Neo4j)
+            try:
+                kg_store = Neo4jStore()
+                kg_store.connect()
+                llm = LLMAdapter(provider="gemini", api_key=os.getenv("LLM_API_KEY", ""))
+                extractor = EntityExtractor(llm=llm)
+                hook = KnowledgeGraphIngestionHook(extractor=extractor, neo4j_store=kg_store)
+                
+                await hook.process_documents(tenant_id_str, [doc_dict])
+            except Exception as exc:
+                logger.error("Celery webhook GitHub hook failed: %s", exc)
+            finally:
+                kg_store.close()
+                
+    return _run_async(_do_process())
+
+
+# ── Feedback loop (skill re-synthesis + critic calibration) ──────────────────
+
+@celery_app.task(bind=True, name="tasks.process_feedback")
+def process_feedback(self, tenant_id_str: str, feedback_id_str: str):
+    """Run the human-feedback loop for a single feedback record.
+
+    Checks for anomalous (poisoning) behavior, evaluates quorum, and — once met —
+    re-synthesizes the affected skill and calibrates the tenant's CriticAgent so
+    the same mistake is caught next time. Runs async in the worker so the HTTP
+    feedback endpoint stays fast.
+    """
+    logger.info("Celery: Processing feedback %s for tenant %s", feedback_id_str, tenant_id_str)
+
+    async def _do_process():
+        from app.db.database import get_db_session
+        from app.agents.llm_adapter import LLMAdapter
+        from app.services.feedback_loop.anomaly_detector import AnomalyDetector
+        from app.services.feedback_loop.calibrator import CriticCalibrator
+        from app.services.feedback_loop.processor import FeedbackProcessor
+        from app.services.feedback_loop.quorum import QuorumEngine
+        from app.services.feedback_loop.updater import SkillUpdater
+
+        llm = LLMAdapter(
+            provider=os.getenv("LLM_PROVIDER", "gemini"),
+            api_key=os.getenv("LLM_API_KEY", ""),
+            model=os.getenv("LLM_MODEL", ""),
+        )
+        try:
+            async with get_db_session() as session:
+                processor = FeedbackProcessor(
+                    db_session=session,
+                    updater=SkillUpdater(llm=llm),
+                    anomaly_detector=AnomalyDetector(session=session),
+                    quorum_engine=QuorumEngine(session=session),
+                    calibrator=CriticCalibrator(db_session=session, llm=llm),
+                )
+                resynthesized = await processor.process_new_feedback(
+                    tenant_id=uuid.UUID(tenant_id_str),
+                    feedback_id=uuid.UUID(feedback_id_str),
+                )
+            logger.info(
+                "Celery: Feedback %s processed (skill re-synthesized=%s)",
+                feedback_id_str, resynthesized,
+            )
+            return resynthesized
+        finally:
+            await llm.close()
+
+    return _run_async(_do_process())
+
+
+@celery_app.task(bind=True, name="tasks.accumulate_llm_cost")
+def accumulate_llm_cost(self, tenant_id_str: str, cost: float, input_tokens: int, output_tokens: int):
+    """Accumulate LLM token usage and estimated cost for a tenant."""
+    logger.info("Celery: Accumulating LLM cost of %f USD for tenant %s", cost, tenant_id_str)
+    
+    async def _do_accumulate():
+        from app.db.database import get_db_session
+        from app.db.models import Tenant
+        from uuid import UUID
+        from sqlalchemy.orm.attributes import flag_modified
+        
+        tenant_uuid = UUID(tenant_id_str)
+        async with get_db_session() as session:
+            tenant = await session.get(Tenant, tenant_uuid)
+            if not tenant:
+                logger.error("Tenant %s not found for cost accumulation", tenant_id_str)
+                return
+                
+            if tenant.settings is None:
+                tenant.settings = {}
+                
+            tenant.settings["accumulated_llm_cost"] = round(
+                tenant.settings.get("accumulated_llm_cost", 0.0) + cost, 6
+            )
+            tenant.settings["total_input_tokens"] = (
+                tenant.settings.get("total_input_tokens", 0) + input_tokens
+            )
+            tenant.settings["total_output_tokens"] = (
+                tenant.settings.get("total_output_tokens", 0) + output_tokens
+            )
+            
+            flag_modified(tenant, "settings")
+            logger.info(
+                "Tenant %s accumulated cost updated to %f USD", 
+                tenant_id_str, tenant.settings["accumulated_llm_cost"]
+            )
+            
+    return _run_async(_do_accumulate())

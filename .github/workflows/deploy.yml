@@ -1,0 +1,106 @@
+name: Company Brain CD (Deploy to ECS Fargate)
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1                  # Adjust to your deployment region
+  ECS_CLUSTER: company-brain-staging     # ECS cluster name
+  BACKEND_SERVICE: cb-backend            # ECS service name for FastAPI
+  WORKER_SERVICE: cb-worker              # ECS service name for Celery workers
+  ECR_BACKEND_REPO: company-brain-backend
+  ECR_WORKER_REPO: company-brain-worker
+
+permissions:
+  id-token: write  # Required for OIDC federation with AWS
+  contents: read
+
+jobs:
+  deploy:
+    name: Build & Deploy to ECS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}  # Recommended: OIDC Role
+          aws-region: ${{ env.AWS_REGION }}
+          # Fallback if using static IAM credentials:
+          # aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          # aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Build and Push Backend ──────────────────────────────────────────
+      - name: Build & Push Backend Image
+        id: build-backend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/${{ env.ECR_BACKEND_REPO }}:$IMAGE_TAG ./backend
+          docker build -t $ECR_REGISTRY/${{ env.ECR_BACKEND_REPO }}:latest ./backend
+          docker push $ECR_REGISTRY/${{ env.ECR_BACKEND_REPO }}:$IMAGE_TAG
+          docker push $ECR_REGISTRY/${{ env.ECR_BACKEND_REPO }}:latest
+          echo "backend_image=$ECR_REGISTRY/${{ env.ECR_BACKEND_REPO }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # ── Build and Push Worker (uses backend Dockerfile) ──────────────────
+      - name: Build & Push Worker Image
+        id: build-worker
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/${{ env.ECR_WORKER_REPO }}:$IMAGE_TAG ./backend --build-arg TARGET=worker
+          docker build -t $ECR_REGISTRY/${{ env.ECR_WORKER_REPO }}:latest ./backend --build-arg TARGET=worker
+          docker push $ECR_REGISTRY/${{ env.ECR_WORKER_REPO }}:$IMAGE_TAG
+          docker push $ECR_REGISTRY/${{ env.ECR_WORKER_REPO }}:latest
+          echo "worker_image=$ECR_REGISTRY/${{ env.ECR_WORKER_REPO }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # ── Retrieve Task Definitions ───────────────────────────────────────
+      - name: Download Active Task Definitions
+        run: |
+          aws ecs describe-task-definition --task-definition ${{ env.BACKEND_SERVICE }} --query taskDefinition > task-def-backend.json
+          aws ecs describe-task-definition --task-definition ${{ env.WORKER_SERVICE }} --query taskDefinition > task-def-worker.json
+
+      # ── Render and Update Backend ECS Task Definition ───────────────────
+      - name: Render Backend Task Definition
+        id: render-backend
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def-backend.json
+          container-name: backend
+          image: ${{ steps.build-backend.outputs.backend_image }}
+
+      - name: Deploy Backend to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-backend.outputs.task-definition }}
+          service: ${{ env.BACKEND_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      # ── Render and Update Worker ECS Task Definition ────────────────────
+      - name: Render Worker Task Definition
+        id: render-worker
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def-worker.json
+          container-name: worker
+          image: ${{ steps.build-worker.outputs.worker_image }}
+
+      - name: Deploy Worker to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-worker.outputs.task-definition }}
+          service: ${{ env.WORKER_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
