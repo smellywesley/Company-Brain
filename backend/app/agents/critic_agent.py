@@ -20,6 +20,7 @@ from typing import Any
 
 from app.agents.base_agent import BaseAgent, AgentResult
 from app.agents.llm_adapter import LLMAdapter
+from app.services.quarantine import lock as quarantine
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,37 @@ class CriticAgent(BaseAgent):
         context: dict[str, Any],
     ) -> CriticVerdict:
         """Evaluate *candidate_action* against policy and return a verdict."""
+        # ── Quarantine gate (Contradiction Handshake) ───────────────────────
+        # If the SOP behind this action is under conflict review, veto
+        # unconditionally and deterministically — before any LLM call, so the
+        # model cannot be talked past it. The lock is an *added* safety layer:
+        # if Redis is unreachable we log and fall through to standard review
+        # rather than bricking every workflow on an infra outage.
+        tenant_id = context.get("tenant_id")
+        skill_id = context.get("skill_id")
+        if tenant_id and skill_id:
+            try:
+                active_lock = await quarantine.get(str(tenant_id), str(skill_id))
+            except Exception as exc:  # noqa: BLE001 — infra failure must not crash critique
+                active_lock = None
+                logger.warning(
+                    "CriticAgent: quarantine check failed (%s) — proceeding with standard review",
+                    exc,
+                )
+            if active_lock:
+                pr_ref = active_lock.get("pr_ref", "a pending contradiction")
+                logger.warning(
+                    "CriticAgent: vetoing action — skill %s is quarantined (%s)",
+                    skill_id, pr_ref,
+                )
+                return CriticVerdict(
+                    approved=False,
+                    risk_score=1.0,
+                    reasons=[
+                        f"Action blocked. Underlying SOP is under conflict review due to {pr_ref}."
+                    ],
+                )
+
         user_prompt = (
             "## Candidate Action\n"
             f"```json\n{json.dumps(candidate_action, indent=2)}\n```\n\n"

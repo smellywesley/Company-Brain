@@ -172,9 +172,18 @@ class WorkflowAgent(BaseAgent):
 
         # ── Step 3: Critic validation ───────────────────────────────────
         audit.append(self._log("Step 3 – critic validation"))
+        # Surface tenant + skill identity so the critic can apply the
+        # Contradiction Handshake quarantine gate. Absent → gate is skipped.
+        skill_id = (matched_skill or {}).get("id") or workflow_config.get("skill_id")
+        tenant_id = workflow_config.get("tenant_id") or trigger_data.get("tenant_id")
         verdict = await self.critic.critique(
             candidate_action=candidate_action,
-            context={"trigger": trigger_data, "docs": merged_context[:10]},
+            context={
+                "trigger": trigger_data,
+                "docs": merged_context[:10],
+                "tenant_id": tenant_id,
+                "skill_id": skill_id,
+            },
         )
         steps.append(WorkflowStep(
             name="critic_review",

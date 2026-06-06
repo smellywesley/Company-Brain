@@ -8,6 +8,7 @@ Handles long-running asynchronous operations:
 """
 
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -16,6 +17,87 @@ from celery import Celery
 from asgiref.sync import async_to_sync
 
 logger = logging.getLogger(__name__)
+
+# Cap on how many active skills a single merged PR is checked against, so a
+# tenant with a huge skill library can't turn one webhook into an unbounded
+# fan-out of LLM calls. Anything beyond this is logged, never silently dropped.
+_MAX_SKILLS_PER_HANDSHAKE = 25
+
+
+async def _run_contradiction_handshake(session, tenant_id_str: str, pr: dict) -> int:
+    """Contradiction Handshake: compare a merged PR against active SOPs.
+
+    For each active skill, ask the ContradictionSynthesizer whether the PR's
+    stated changes contradict the SOP. On a real contradiction, place a
+    quarantine lock so the CriticAgent vetoes any autonomous action on that
+    skill until a human resolves it. Returns the number of skills quarantined.
+    """
+    from sqlalchemy import select
+    from app.db.models import Skill
+    from app.agents.llm_adapter import LLMAdapter
+    from app.services.contradiction.synthesizer import ContradictionSynthesizer
+    from app.services.quarantine import lock as quarantine
+
+    pr_number = pr.get("number")
+    pr_ref = f"PR #{pr_number}"
+    new_reality = f"{pr_ref}: {pr.get('title', '')}\n\n{pr.get('body', '') or ''}"
+
+    result = await session.execute(
+        select(Skill).where(
+            Skill.tenant_id == uuid.UUID(tenant_id_str),
+            Skill.status == "active",
+        )
+    )
+    skills = result.scalars().all()
+    if not skills:
+        return 0
+    if len(skills) > _MAX_SKILLS_PER_HANDSHAKE:
+        logger.warning(
+            "Contradiction handshake: %d active skills for tenant %s, checking first %d (capped)",
+            len(skills), tenant_id_str, _MAX_SKILLS_PER_HANDSHAKE,
+        )
+        skills = skills[:_MAX_SKILLS_PER_HANDSHAKE]
+
+    llm = LLMAdapter(
+        provider=os.getenv("LLM_PROVIDER", "gemini"),
+        api_key=os.getenv("LLM_API_KEY", ""),
+        model=os.getenv("LLM_MODEL", ""),
+        temperature=0.0,
+    )
+    synthesizer = ContradictionSynthesizer(llm)
+    locked = 0
+    try:
+        for skill in skills:
+            sop_text = json.dumps(
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "definition": skill.definition,
+                },
+                default=str,
+            )
+            report = await synthesizer.synthesize(
+                new_reality=new_reality,
+                stale_artifact=sop_text,
+                skill_id=str(skill.id),
+                tenant_id=tenant_id_str,
+            )
+            if report.get("no_contradiction") or not report.get("conflicts"):
+                continue
+            summary = report["conflicts"][0].get("summary", "Contradiction detected.")
+            quarantine.acquire_sync(
+                tenant_id_str,
+                str(skill.id),
+                pr_ref=pr_ref,
+                summary=summary,
+                severity=report.get("severity", "high"),
+            )
+            locked += 1
+    finally:
+        await llm.close()
+
+    logger.info("Contradiction handshake for %s: %d skill(s) quarantined", pr_ref, locked)
+    return locked
 
 # Initialize Celery app
 redis_url = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
@@ -297,7 +379,16 @@ def process_github_webhook_event(self, x_github_event: str, event_data: dict):
                 logger.error("Celery webhook GitHub hook failed: %s", exc)
             finally:
                 kg_store.close()
-                
+
+            # 4. Contradiction Handshake — only on *merged* pull requests.
+            if x_github_event == "pull_request":
+                pr = event_data.get("pull_request", {})
+                if event_data.get("action") == "closed" and pr.get("merged"):
+                    try:
+                        await _run_contradiction_handshake(session, tenant_id_str, pr)
+                    except Exception as exc:
+                        logger.error("Contradiction handshake failed: %s", exc)
+
     return _run_async(_do_process())
 
 
