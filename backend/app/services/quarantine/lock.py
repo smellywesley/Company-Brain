@@ -9,8 +9,10 @@ conflict ("Accept Synthesis") and the lock is released.
 
 Key schema:   ``quarantine:{tenant_id}:{skill_id}``
 Value (JSON): ``{pr_ref, summary, severity, locked_by, locked_at}``
-TTL:          none — a stale SOP stays blocked until a human releases it, never
-              silently unblocked by a timer.
+TTL:          a soft lock carries a TTL (default 24h) so a false positive
+              self-heals instead of bricking a skill forever. Pass
+              ``ttl_seconds=None`` for a permanent lock — reserve that for
+              human-confirmed / critical contradictions only.
 
 Built on the synchronous ``redis-py`` client (the same client family the
 webhook router uses) so a single module-level pool is safe across both the
@@ -34,6 +36,9 @@ import redis
 logger = logging.getLogger(__name__)
 
 _KEY_TEMPLATE = "quarantine:{tenant_id}:{skill_id}"
+# Soft locks self-heal after this many seconds so a false positive cannot brick
+# a skill forever. Permanent locks (human-confirmed) pass ttl_seconds=None.
+_DEFAULT_TTL_SECONDS = 86_400  # 24h
 _client: "redis.Redis | None" = None
 
 
@@ -61,8 +66,13 @@ def acquire_sync(
     summary: str,
     severity: str = "high",
     locked_by: str = "contradiction-worker",
+    ttl_seconds: int | None = _DEFAULT_TTL_SECONDS,
 ) -> str:
-    """Place a quarantine lock on a skill. No TTL — released only by a human."""
+    """Place a quarantine lock on a skill.
+
+    ``ttl_seconds`` defaults to 24h so a false positive self-heals. Pass
+    ``None`` for a permanent lock (human-confirmed / critical only).
+    """
     key = _key(tenant_id, skill_id)
     payload = json.dumps(
         {
@@ -71,10 +81,14 @@ def acquire_sync(
             "severity": severity,
             "locked_by": locked_by,
             "locked_at": datetime.now(timezone.utc).isoformat(),
+            "ttl_seconds": ttl_seconds,
         }
     )
-    _get_client().set(key, payload)  # intentionally no `ex=` — human release only
-    logger.warning("Quarantine lock placed: %s (%s)", key, pr_ref)
+    if ttl_seconds is None:
+        _get_client().set(key, payload)  # permanent — human release only
+    else:
+        _get_client().set(key, payload, ex=ttl_seconds)  # self-heals on expiry
+    logger.warning("Quarantine lock placed: %s (%s, ttl=%s)", key, pr_ref, ttl_seconds)
     return key
 
 
@@ -112,9 +126,10 @@ async def acquire(
     summary: str,
     severity: str = "high",
     locked_by: str = "contradiction-worker",
+    ttl_seconds: int | None = _DEFAULT_TTL_SECONDS,
 ) -> str:
     return await asyncio.to_thread(
-        acquire_sync, tenant_id, skill_id, pr_ref, summary, severity, locked_by
+        acquire_sync, tenant_id, skill_id, pr_ref, summary, severity, locked_by, ttl_seconds
     )
 
 

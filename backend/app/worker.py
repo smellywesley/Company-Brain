@@ -22,6 +22,45 @@ logger = logging.getLogger(__name__)
 # tenant with a huge skill library can't turn one webhook into an unbounded
 # fan-out of LLM calls. Anything beyond this is logged, never silently dropped.
 _MAX_SKILLS_PER_HANDSHAKE = 25
+# Cap files/patch pulled per PR so a giant PR can't blow up memory or the LLM
+# context. Tier 0 only needs paths + a representative slice of the patch.
+_MAX_PR_FILES = 300
+_MAX_PATCH_CHARS = 60_000
+
+
+async def _fetch_pr_changes(pr: dict) -> tuple[list[str], str]:
+    """Fetch a merged PR's changed file paths and patch text from GitHub.
+
+    Degrades to ``([], "")`` on any failure (no token, network error, no URL)
+    so the handshake falls back to title+body rather than crashing. The Tier 0
+    detector treats an empty diff as "unknown" and lets the LLM decide.
+    """
+    import httpx
+
+    token = os.getenv("GITHUB_TOKEN", "")
+    files_url = (pr.get("url") or "").rstrip("/")
+    if not token or not files_url:
+        return [], ""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    paths: list[str] = []
+    patch_parts: list[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+            resp = await client.get(f"{files_url}/files", params={"per_page": 100})
+            resp.raise_for_status()
+            for f in resp.json()[:_MAX_PR_FILES]:
+                if f.get("filename"):
+                    paths.append(f["filename"])
+                if f.get("patch"):
+                    patch_parts.append(f"--- {f['filename']}\n{f['patch']}")
+    except Exception as exc:  # noqa: BLE001 — detection is best-effort
+        logger.warning("Tier 0: could not fetch PR changes (%s) — falling back", exc)
+        return [], ""
+    return paths, "\n".join(patch_parts)[:_MAX_PATCH_CHARS]
 
 
 async def _run_contradiction_handshake(session, tenant_id_str: str, pr: dict) -> int:
@@ -36,11 +75,21 @@ async def _run_contradiction_handshake(session, tenant_id_str: str, pr: dict) ->
     from app.db.models import Skill
     from app.agents.llm_adapter import LLMAdapter
     from app.services.contradiction.synthesizer import ContradictionSynthesizer
+    from app.services.contradiction import detector
     from app.services.quarantine import lock as quarantine
 
     pr_number = pr.get("number")
     pr_ref = f"PR #{pr_number}"
-    new_reality = f"{pr_ref}: {pr.get('title', '')}\n\n{pr.get('body', '') or ''}"
+    # Tier 0 needs the actual change, not just the title. The webhook does not
+    # carry file diffs, so fetch them; degrade to title+body if unavailable.
+    changed_paths, patch_text = await _fetch_pr_changes(pr)
+    changed_summary = (
+        f"\n\nChanged files: {', '.join(changed_paths)}" if changed_paths else ""
+    )
+    new_reality = (
+        f"{pr_ref}: {pr.get('title', '')}\n\n{pr.get('body', '') or ''}"
+        f"{changed_summary}\n\n{patch_text[:8000]}"
+    )
 
     result = await session.execute(
         select(Skill).where(
@@ -76,6 +125,15 @@ async def _run_contradiction_handshake(session, tenant_id_str: str, pr: dict) ->
                 },
                 default=str,
             )
+            # Tier 0 gate: skip the expensive LLM unless the PR structurally
+            # touches something this SOP references. When we have no diff
+            # (fetch failed), fall through to the LLM rather than miss a real
+            # conflict.
+            if changed_paths or patch_text:
+                tier0 = detector.detect(changed_paths, patch_text, sop_text)
+                if not tier0["has_structural_overlap"]:
+                    continue
+
             report = await synthesizer.synthesize(
                 new_reality=new_reality,
                 stale_artifact=sop_text,
@@ -84,7 +142,11 @@ async def _run_contradiction_handshake(session, tenant_id_str: str, pr: dict) ->
             )
             if report.get("no_contradiction") or not report.get("conflicts"):
                 continue
-            summary = report["conflicts"][0].get("summary", "Contradiction detected.")
+            # Store every conflict summary, not just the first.
+            summary = " | ".join(
+                c.get("summary", "Contradiction detected.")
+                for c in report["conflicts"]
+            )
             quarantine.acquire_sync(
                 tenant_id_str,
                 str(skill.id),
