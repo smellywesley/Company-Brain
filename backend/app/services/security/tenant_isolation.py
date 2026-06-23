@@ -28,13 +28,17 @@ class TenantIsolatedWeaviateStore:
         """
         self._store = base_store
 
-    def upsert(self, tenant_id: str, documents: list[dict[str, Any]]) -> None:
-        """Upsert documents with mandatory tenant_id metadata."""
-        for doc in documents:
-            if "metadata" not in doc:
-                doc["metadata"] = {}
-            doc["metadata"]["tenant_id"] = tenant_id
-        self._store.upsert(documents)
+    def upsert(self, tenant_id: str, chunks: list[Any]) -> int:
+        """Upsert ``DocumentChunk`` objects, forcing tenant_id on each.
+
+        Overrides any tenant_id already on the chunk so a caller can never
+        write into another tenant's space.
+        """
+        if not tenant_id:
+            raise ValueError("upsert requires a non-empty tenant_id")
+        for chunk in chunks:
+            setattr(chunk, "tenant_id", tenant_id)
+        return self._store.upsert_chunks(chunks)
 
     def search(
         self,
@@ -44,18 +48,14 @@ class TenantIsolatedWeaviateStore:
     ) -> list[dict[str, Any]]:
         """Search with a mandatory tenant_id filter.
 
-        This prevents Tenant A from seeing Tenant B's documents.
+        This prevents Tenant A from seeing Tenant B's documents. The underlying
+        store also fails closed on an empty tenant_id.
         """
-        results = self._store.search(
+        return self._store.search(
             query_vector=query_vector,
+            tenant_id=tenant_id,
             limit=limit,
-            where_filter={
-                "path": ["tenant_id"],
-                "operator": "Equal",
-                "valueText": tenant_id,
-            },
         )
-        return results
 
 
 # ─────────────────────────────────────────────────────────────────────────────

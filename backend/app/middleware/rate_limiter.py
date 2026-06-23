@@ -181,15 +181,28 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _client_id(request: Request) -> str:
-        """Derive a stable client identifier: authenticated user sub, or IP."""
+        """Derive a stable client identifier: authenticated user sub, or IP.
+
+        The IP comes from the direct TCP peer by default. ``X-Forwarded-For`` is
+        only honoured when ``TRUSTED_PROXY_COUNT`` is set (number of trusted
+        hops in front of the app), in which case the entry added by the trusted
+        edge — the ``count``-th from the right — is used. Trusting the left-most
+        XFF entry lets a client spoof the header and mint unlimited buckets.
+        """
         user = getattr(request.state, "user", None)
-        if user is not None:
-            return f"user:{getattr(user, 'sub', 'unknown')}"
-        # Fallback to IP
-        forwarded = request.headers.get("X-Forwarded-For", "")
-        if forwarded:
-            return f"ip:{forwarded.split(',')[0].strip()}"
-        return f"ip:{request.client.host if request.client else 'unknown'}"
+        if user is not None and getattr(user, "sub", None):
+            return f"user:{user.sub}"
+
+        peer = request.client.host if request.client else "unknown"
+        try:
+            trusted = int(os.getenv("TRUSTED_PROXY_COUNT", "0"))
+        except ValueError:
+            trusted = 0
+        if trusted > 0:
+            chain = [p.strip() for p in request.headers.get("X-Forwarded-For", "").split(",") if p.strip()]
+            if len(chain) >= trusted:
+                peer = chain[-trusted]
+        return f"ip:{peer}"
 
     def _resolve_tier(self, path: str) -> RateLimitTier:
         """Return the first matching tier for *path*, or the last (catch-all)."""

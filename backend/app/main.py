@@ -4,8 +4,8 @@ Company Brain Backend – FastAPI Application Entry Point.
 Middleware stack (applied bottom-to-top by Starlette, so the first
 ``add_middleware`` call is the **innermost** layer):
 
-    Request ──►  SecurityHeaders ──►  AuditLog ──►  RateLimiter
-            ──►  CORS ──►  OIDCAuth ──►  InputSanitization ──►  Route
+    Request ──►  SecurityHeaders ──►  AuditLog ──►  CORS
+            ──►  OIDCAuth ──►  RateLimiter ──►  InputSanitization ──►  Route
 
 All security middleware is imported from ``app.middleware``.
 """
@@ -89,14 +89,20 @@ rbac = RBACPolicy()
 # 1. Input sanitization (innermost – runs closest to route handlers)
 app.add_middleware(InputSanitizationMiddleware, block_on_detection=True)
 
-# 2. OIDC authentication
+# 2. Rate limiter — added before auth so it is INNER to auth on the request
+#    path (Starlette runs the last-added middleware first). This guarantees
+#    OIDCAuth has populated request.state.user before the limiter keys its
+#    bucket, so limits are per-user, not a single shared per-IP bucket.
+app.add_middleware(RateLimiterMiddleware)
+
+# 3. OIDC authentication
 app.add_middleware(
     OIDCAuthMiddleware,
     oidc_issuer=os.getenv("OIDC_ISSUER"),
     audience=os.getenv("OIDC_AUDIENCE"),
 )
 
-# 3. CORS – allow only internal origins (frontend)
+# 4. CORS – allow only internal origins (frontend)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")],
@@ -104,9 +110,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# 4. Rate limiter
-app.add_middleware(RateLimiterMiddleware)
 
 # 5. Audit logger
 app.add_middleware(AuditLogMiddleware)
@@ -183,6 +186,19 @@ class OnboardingRequest(BaseModel):
     risk_posture: str | None = None
 
 
+class ObserveRequest(BaseModel):
+    """Ingestion input for the universal OODA core graph engine.
+
+    Vertical-agnostic: ``source_platform`` / ``industry_vertical`` are tags on a
+    single generic compiler, not selectors for per-vertical parsers.
+    """
+    source_platform: str = Field(..., min_length=1)
+    industry_vertical: str = Field(default="generic")
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+    skill_id: str | None = None
+    stale_artifact: str | None = None
+
+
 class ProfileUpdate(BaseModel):
     """Partial update of a tenant's Company Profile."""
     display_name: str | None = Field(default=None, max_length=120)
@@ -255,6 +271,87 @@ async def trigger_ingest(
         "duration_ms": round(elapsed_ms, 1),
         "status": "completed",
     })
+
+
+def _build_observe_collaborators():
+    """Build the LLM-backed extractor, contradiction synthesizer, and injection
+    scanner if an LLM key is configured; otherwise return (None, None, None) so
+    the pipeline uses its deterministic heuristic fallback. Never raises."""
+    try:
+        provider = os.getenv("LLM_PROVIDER", "gemini")
+        api_key = (
+            os.getenv("LLM_API_KEY")
+            or os.getenv("GEMINI_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("ANTHROPIC_API_KEY")
+        )
+        if not api_key:
+            return None, None, None
+        from app.agents.llm_adapter import LLMAdapter
+        from app.services.knowledge_graph.entity_extractor import EntityExtractor
+        from app.services.contradiction.synthesizer import ContradictionSynthesizer
+        from app.services.security.prompt_injection import AdversarialDetector
+
+        llm = LLMAdapter(provider=provider, api_key=api_key, model=os.getenv("LLM_MODEL", ""))
+        extractor = EntityExtractor(llm)
+
+        async def extract(text: str):
+            result = await extractor.extract_with_relations(text)
+            triplets = [
+                {
+                    "subject": r.source_name,
+                    "predicate": r.relation_type,
+                    "object": r.target_name,
+                    "attributes": {"extractor": "llm", "confidence": 0.85, **(r.properties or {})},
+                }
+                for r in result.relationships
+            ]
+            for e in result.entities:
+                triplets.append({
+                    "subject": e.name,
+                    "predicate": "is_a",
+                    "object": e.entity_type,
+                    "attributes": {"extractor": "llm", "confidence": 0.8},
+                })
+            return triplets
+
+        synth = ContradictionSynthesizer(llm)
+        detector = AdversarialDetector(llm)
+        return extract, synth.synthesize, detector.scan_text
+    except Exception:  # noqa: BLE001
+        logger.exception("LLM extractor build failed; falling back to heuristic")
+        return None, None, None
+
+
+@app.post("/observe")
+async def observe_ingest(
+    body: ObserveRequest,
+    request: Request,
+    _: None = Depends(rbac.require_permission("write", "ingestion")),
+):
+    """Universal OODA ingestion: turn any vertical's raw exhaust into canonical
+    triplets, run the quarantine pre-flight + contradiction synthesis, and return
+    the mandated core-graph contract."""
+    from app.services.observe.pipeline import observe as run_observe
+    from app.services.quarantine import lock as quarantine_lock
+
+    async with get_db_session() as session:
+        tenant = await resolve_tenant(request, session)
+
+    extract, synthesize, scan = _build_observe_collaborators()
+    result = await run_observe(
+        tenant_id=str(tenant.id),
+        source_platform=body.source_platform,
+        industry_vertical=body.industry_vertical,
+        raw_payload=body.raw_payload,
+        skill_id=body.skill_id,
+        stale_artifact=body.stale_artifact,
+        extract=extract,
+        synthesize=synthesize,
+        scan=scan,
+        quarantine_get=quarantine_lock.get_sync,
+    )
+    return JSONResponse(result)
 
 
 # ---------------------------------------------------------------------------
@@ -493,29 +590,45 @@ async def submit_feedback(
 
 @app.post("/search")
 async def search_knowledge_base(
+    request: Request,
     body: SearchRequest,
     _: None = Depends(rbac.require_permission("read", "knowledge_base")),
 ):
-    """Semantic search over the vectorised knowledge base."""
+    """Semantic search over the vectorised knowledge base (tenant-scoped).
+
+    Results are filtered to the caller's tenant so one tenant can never read
+    another tenant's documents.
+    """
     try:
         from ingestion.embedding_pipeline import Embedder, WeaviateStore
+
+        async with get_db_session() as session:
+            tenant = await resolve_tenant(request, session)
+        tenant_id = str(tenant.id)
 
         embedder = Embedder()
         store = WeaviateStore()
         store.connect()
-
-        query_vector = embedder.embed([body.query])[0]
-        results = store.search(query_vector=query_vector, limit=body.limit)
-        store.close()
+        try:
+            query_vector = embedder.embed([body.query])[0]
+            results = store.search(
+                query_vector=query_vector,
+                tenant_id=tenant_id,
+                limit=body.limit,
+            )
+        finally:
+            store.close()
 
         return JSONResponse({
             "query": body.query,
             "results": results,
             "count": len(results),
         })
-    except Exception as exc:
+    except HTTPException:
+        raise
+    except Exception:
         logger.exception("Search failed")
-        raise HTTPException(status_code=500, detail=f"Search failed: {exc}")
+        raise HTTPException(status_code=500, detail="Search failed")
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +688,69 @@ async def list_skills(
                 for s in skills
             ],
         })
+
+
+# ---------------------------------------------------------------------------
+# Routes: Quarantine (Contradiction Handshake reconciliation)
+# ---------------------------------------------------------------------------
+
+@app.get("/quarantine")
+async def list_quarantines(
+    request: Request,
+    _: None = Depends(rbac.require_permission("read", "skills")),
+):
+    """Active contradiction quarantines for the caller's tenant.
+
+    Backs the Knowledge Reconciliation queue: each entry is a skill whose SOP
+    is under conflict review, with the lock evidence (pr_ref, summary,
+    severity, locked_at) the reviewer adjudicates.
+    """
+    from app.services.quarantine import service as quarantine_service
+
+    async with get_db_session() as session:
+        tenant = await resolve_tenant(request, session)
+        locks = await quarantine_service.list_active_locks(session, tenant.id)
+        return JSONResponse({"quarantines": locks, "count": len(locks)})
+
+
+class QuarantineReleaseRequest(BaseModel):
+    resolution: str = Field(..., description="'dismiss' (false positive) or 'accept' (synthesis applied)")
+    reason: str = Field("", max_length=2000)
+
+
+@app.post("/quarantine/{skill_id}/release")
+async def release_quarantine(
+    skill_id: str,
+    payload: QuarantineReleaseRequest,
+    request: Request,
+    _: None = Depends(rbac.require_permission("approve_action", "quarantine")),
+):
+    """Resolve a quarantine after human review (manager/admin only).
+
+    'dismiss' records a false positive; 'accept' records that the synthesized
+    fix was applied. Both release the lock so the CriticAgent stops vetoing.
+    """
+    from app.services.quarantine import service as quarantine_service
+
+    user = getattr(request.state, "user", None)
+    resolved_by = (getattr(user, "email", None) or getattr(user, "sub", None) or "unknown") if user else "unknown"
+
+    async with get_db_session() as session:
+        tenant = await resolve_tenant(request, session)
+        try:
+            outcome = await quarantine_service.release_lock(
+                session,
+                tenant.id,
+                skill_id,
+                resolution=payload.resolution,
+                resolved_by=resolved_by,
+                reason=payload.reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return JSONResponse(outcome)
 
 
 # ---------------------------------------------------------------------------

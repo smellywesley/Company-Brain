@@ -38,9 +38,13 @@ logger = logging.getLogger("company_brain.audit")
 # Configuration
 # ---------------------------------------------------------------------------
 
+from app.services.security.secret_config import require_secret
+
 _AUDIT_LOG_DIR = Path(os.getenv("AUDIT_LOG_DIR", "logs"))
 _AUDIT_LOG_FILE = _AUDIT_LOG_DIR / "audit.jsonl"
-_HMAC_SECRET = os.getenv("AUDIT_HMAC_SECRET", "change-me-in-production").encode()
+# Fail closed in production: a default/weak secret makes the tamper-evident
+# chain forgeable, defeating the entire audit guarantee.
+_HMAC_SECRET = require_secret("AUDIT_HMAC_SECRET", min_length=32).encode()
 
 # Module-level state for the HMAC chain.
 # The lock serializes read-modify-write of _last_hmac + file append so the

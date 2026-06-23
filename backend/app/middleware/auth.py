@@ -79,6 +79,13 @@ DEFAULT_PUBLIC_PATHS: Set[str] = {
     "/docs",
     "/redoc",
     "/openapi.json",
+    # Inbound from external systems that cannot carry a user bearer token.
+    # These are NOT unauthenticated — each verifies its own credential:
+    # webhooks check an HMAC signature; the OAuth callback verifies a signed
+    # state token. "/oauth/connect" is deliberately NOT here: it stays behind
+    # auth so tenant/user are derived from the session, not query params.
+    "/webhooks",
+    "/oauth/callback",
 }
 
 
@@ -245,7 +252,19 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
         # Gated off by default; emits a loud warning on every request so it
         # can never be silently shipped.
         # ------------------------------------------------------------------
-        if os.getenv("AUTH_BYPASS_DEV", "").lower() in ("1", "true", "yes", "on"):
+        from app.services.security.secret_config import is_production
+
+        bypass_requested = os.getenv("AUTH_BYPASS_DEV", "").lower() in ("1", "true", "yes", "on")
+        if bypass_requested and is_production():
+            # Fail closed: never honour the escape hatch in production, even if
+            # the env var leaks into the prod config.
+            logger.error(
+                "AUTH_BYPASS_DEV is set in a production environment — IGNORING it. "
+                "Remove this variable from production config immediately."
+            )
+            bypass_requested = False
+
+        if bypass_requested:
             logger.warning(
                 "AUTH_BYPASS_DEV active — injecting synthetic admin user for %s %s. "
                 "DO NOT USE IN PRODUCTION.",

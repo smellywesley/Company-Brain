@@ -61,7 +61,22 @@ async def resolve_tenant(request: Request, session: AsyncSession) -> Tenant:
             raise HTTPException(status_code=403, detail="Tenant is inactive")
         return tenant
 
-    # No claim — dev / single-tenant demo. Use (and lazily create) the default.
+    # No claim. In production a tokenless/tenantless request must NOT silently
+    # land in a shared "default" tenant — that mixes orgs. Fail closed instead.
+    # The lazy "default" tenant is for local dev / single-tenant demo only.
+    from app.services.security.secret_config import is_production
+
+    if is_production():
+        logger.warning(
+            "Request has no tenant claim in production (user=%s); refusing rather "
+            "than falling back to the shared default tenant",
+            getattr(user, "sub", "unknown"),
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Token is not associated with a tenant",
+        )
+
     return await _get_or_create_default(session)
 
 

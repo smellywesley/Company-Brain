@@ -16,7 +16,7 @@ from typing import Any
 
 import weaviate
 from weaviate.classes.config import Configure, Property, DataType
-from weaviate.classes.query import MetadataQuery
+from weaviate.classes.query import MetadataQuery, Filter
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ class DocumentChunk:
     timestamp: str
     sensitivity_level: str
     doc_type: str
+    tenant_id: str
     metadata: dict[str, Any] = field(default_factory=dict)
     vector: list[float] = field(default_factory=list)
 
@@ -136,6 +137,7 @@ class WeaviateStore:
                 name=WEAVIATE_CLASS_NAME,
                 vectorizer_config=Configure.Vectorizer.none(),
                 properties=[
+                    Property(name="tenant_id", data_type=DataType.TEXT),
                     Property(name="content", data_type=DataType.TEXT),
                     Property(name="source", data_type=DataType.TEXT),
                     Property(name="author", data_type=DataType.TEXT),
@@ -161,6 +163,7 @@ class WeaviateStore:
             for chunk in chunks:
                 batch.add_object(
                     properties={
+                        "tenant_id": chunk.tenant_id,
                         "content": chunk.content,
                         "source": chunk.source,
                         "author": chunk.author,
@@ -182,18 +185,30 @@ class WeaviateStore:
     def search(
         self,
         query_vector: list[float],
+        tenant_id: str,
         limit: int = 10,
         sensitivity_filter: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return the top‑k nearest documents for *query_vector*."""
+        """Return the top‑k nearest documents for *query_vector*.
+
+        ``tenant_id`` is mandatory and every result is filtered to it, so one
+        tenant can never retrieve another tenant's vectors. An empty
+        ``tenant_id`` fails closed (returns nothing) rather than searching
+        across all tenants.
+        """
         assert self._client is not None
         import json
+
+        if not tenant_id:
+            logger.error("WeaviateStore.search called without a tenant_id; refusing cross-tenant search")
+            return []
 
         collection = self._client.collections.get(WEAVIATE_CLASS_NAME)
 
         results = collection.query.near_vector(
             near_vector=query_vector,
             limit=limit,
+            filters=Filter.by_property("tenant_id").equal(tenant_id),
             return_metadata=MetadataQuery(distance=True),
         )
 
@@ -227,11 +242,14 @@ class EmbeddingPipeline:
         self.store = store or WeaviateStore()
         self.embedder = embedder or Embedder()
 
-    def run(self, documents: list[Any]) -> int:
-        """Process a batch of ``NormalizedDocument`` objects.
+    def run(self, tenant_id: str, documents: list[Any]) -> int:
+        """Process a batch of ``NormalizedDocument`` objects for one tenant.
 
-        Returns the total number of chunks upserted.
+        Every chunk is tagged with ``tenant_id`` so vectors are isolated per
+        tenant. Returns the total number of chunks upserted.
         """
+        if not tenant_id:
+            raise ValueError("EmbeddingPipeline.run requires a non-empty tenant_id")
         self.store.connect()
         total = 0
 
@@ -255,6 +273,7 @@ class EmbeddingPipeline:
                             timestamp=doc.timestamp,
                             sensitivity_level=doc.sensitivity_level,
                             doc_type=doc.doc_type,
+                            tenant_id=tenant_id,
                             metadata=doc.metadata,
                             vector=vec,
                         )

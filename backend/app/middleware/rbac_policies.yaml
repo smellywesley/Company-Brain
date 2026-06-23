@@ -33,6 +33,7 @@ roles:
         resources:
           - "workflows"
           - "ingestion"
+          - "quarantine"   # release a Contradiction Handshake lock (dismiss / accept)
 
   engineer:
     description: "Engineer – can read, write, and execute workflows"

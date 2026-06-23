@@ -9,6 +9,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from app.services.security.secrets_service import SecretsService
+from app.db.database import get_db_session
+from app.db.tenancy import resolve_tenant
 
 logger = logging.getLogger("company_brain.oauth")
 
@@ -16,7 +18,11 @@ router = APIRouter(prefix="/oauth", tags=["OAuth"])
 secrets_service = SecretsService()
 
 # ── Keys & Configs ──────────────────────────────────────────────────────────
-STATE_JWT_SECRET = os.getenv("SKILL_SIGNING_KEY", "change-me-signing-key-minimum-32-chars")
+from app.services.security.secret_config import require_secret
+
+# Fail closed in production: a guessable signing key lets an attacker forge the
+# OAuth state token (CSRF) and amplifies tenant/credential injection.
+STATE_JWT_SECRET = require_secret("SKILL_SIGNING_KEY", min_length=32)
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
 
 # OAuth credentials loaded from env
@@ -53,12 +59,24 @@ def _verify_state_token(token: str) -> dict[str, Any]:
 @router.get("/connect/{source}")
 async def oauth_connect(
     source: str,
-    tenant_id: str = Query(..., description="The ID of the active tenant"),
-    user_id: str = Query(..., description="The ID of the requesting user")
+    request: Request,
 ):
-    """Initiate OAuth connection flow by redirecting to provider auth page."""
-    state = _generate_state_token(tenant_id, user_id)
-    
+    """Initiate OAuth connection flow by redirecting to provider auth page.
+
+    Tenant and user identity are derived from the authenticated session — never
+    from client-supplied query params — so a caller cannot bind a provider's
+    credentials to another tenant (IDOR).
+    """
+    user = getattr(request.state, "user", None)
+    user_sub = getattr(user, "sub", None) if user is not None else None
+    if not user_sub:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    async with get_db_session() as session:
+        tenant = await resolve_tenant(request, session)
+
+    state = _generate_state_token(str(tenant.id), str(user_sub))
+
     redirect_uri = f"{os.getenv('BACKEND_URL', 'http://localhost:8000')}/oauth/callback/{source}"
 
     if source == "slack":
