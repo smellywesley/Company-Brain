@@ -62,7 +62,7 @@ export function Header() {
         {/* Live status */}
         <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1.5">
           <span className={cn("size-2 rounded-full", s.dot, status === "online" && "live-dot")} />
-          <span className={cn("hidden text-xs font-medium sm:inline", s.text)}>{s.label}</span>
+          <span className={cn("text-xs font-medium", s.text)}>{s.label}</span>
         </div>
 
         <ThemeToggle />

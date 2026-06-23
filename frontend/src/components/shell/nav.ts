@@ -3,6 +3,7 @@ import {
   ShieldCheck,
   ScrollText,
   Boxes,
+  GitPullRequestArrow,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -37,6 +38,13 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: ShieldCheck,
         description:
           "Review actions the CriticAgent flagged before they execute.",
+      },
+      {
+        label: "Reconciliation",
+        href: "/reconciliation",
+        icon: GitPullRequestArrow,
+        description:
+          "Resolve merged-PR contradictions that quarantined an operating procedure.",
       },
       {
         label: "Audit Log",

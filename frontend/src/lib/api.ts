@@ -266,6 +266,37 @@ export interface PolicyHistoryResponse {
   count: number;
 }
 
+// ── Quarantine (Contradiction Handshake) ─────────────────────────────────────
+
+export interface QuarantineLock {
+  pr_ref: string;
+  summary: string;
+  severity: "low" | "medium" | "high" | "critical";
+  locked_by: string;
+  locked_at: string;
+  ttl_seconds: number | null;
+}
+
+export interface QuarantineEntry {
+  skill_id: string;
+  skill_name: string;
+  lock: QuarantineLock;
+}
+
+export interface QuarantinesResponse {
+  quarantines: QuarantineEntry[];
+  count: number;
+}
+
+export interface QuarantineReleaseResponse {
+  skill_id: string;
+  skill_name: string;
+  resolution: "dismiss" | "accept";
+  resolved_by: string;
+  reason: string;
+  released_lock: QuarantineLock;
+}
+
 // ── Company Profile / Onboarding ─────────────────────────────────────────────
 
 export interface CompanyBranding {
@@ -446,6 +477,22 @@ class CompanyBrainAPI {
 
   async getPolicyHistory(): Promise<PolicyHistoryResponse> {
     return this.request<PolicyHistoryResponse>("GET", "/policy/history");
+  }
+
+  async getQuarantines(): Promise<QuarantinesResponse> {
+    return this.request<QuarantinesResponse>("GET", "/quarantine");
+  }
+
+  async releaseQuarantine(
+    skillId: string,
+    resolution: "dismiss" | "accept",
+    reason = "",
+  ): Promise<QuarantineReleaseResponse> {
+    return this.request<QuarantineReleaseResponse>(
+      "POST",
+      `/quarantine/${skillId}/release`,
+      { resolution, reason },
+    );
   }
 
   async getProfile(): Promise<CompanyProfile> {

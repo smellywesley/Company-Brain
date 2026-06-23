@@ -3,6 +3,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { Sidebar } from "./Sidebar";
 import { Header } from "./Header";
+import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 
 /**
  * Application shell: persistent glass Sidebar + sticky Header, with the routed
@@ -22,6 +23,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </div>
       <Toaster position="top-right" closeButton />
+      <ServiceWorkerRegister />
     </TooltipProvider>
   );
 }

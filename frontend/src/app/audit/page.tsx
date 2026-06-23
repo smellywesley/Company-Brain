@@ -158,7 +158,8 @@ export default function AuditPage() {
             </div>
 
             {/* Stepper */}
-            <div className="mt-4 flex items-center gap-1 overflow-x-auto pb-1">
+            <div className="relative mt-4">
+              <div className="flex items-center gap-1 overflow-x-auto pb-1">
               {entry.steps.map((step, si) => {
                 const Icon = STAGE_ICON[step.stage] ?? Database;
                 const isAct = step.stage === "act";
@@ -185,6 +186,11 @@ export default function AuditPage() {
                   </div>
                 );
               })}
+              </div>
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-card to-transparent sm:hidden"
+              />
             </div>
 
             {/* Hash chain footer */}
