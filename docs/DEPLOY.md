@@ -33,7 +33,7 @@ Use the two values for `SKILL_SIGNING_KEY` and `AUDIT_HMAC_SECRET`.
 
 ## Step 6 — OIDC provider (auth)
 1. Okta or Auth0 → create an application.
-2. Capture `OIDC_ISSUER` and `OIDC_AUDIENCE`. (Add the Vercel/Railway URLs as allowed origins in Step 9.)
+2. Capture `OIDC_ISSUER` and `OIDC_AUDIENCE`. **Required in prod:** with `AUTH_BYPASS_DEV` off, an unset `OIDC_ISSUER` makes the API reject *every* authenticated request — you'll lock yourself out and the app will look broken. (Add the Vercel/Railway URLs as allowed origins in Step 9.)
 
 ## Step 7 — Backend API (Railway)
 1. railway.app → New project → **Deploy from repo**, root `backend/` (it has a Dockerfile).
@@ -47,7 +47,7 @@ Use the two values for `SKILL_SIGNING_KEY` and `AUDIT_HMAC_SECRET`.
    - `LLM_PROVIDER`, `LLM_API_KEY`
    - `BACKEND_URL` = the Railway public URL (set after first deploy, then redeploy)
    - `FRONTEND_ORIGIN` = the Vercel URL (Step 8)
-3. **Add a second Railway service** (same image) for the Celery worker — start command e.g. `celery -A app.worker.celery_app worker -l info`. Without it, ingestion/synthesis tasks enqueue but never run.
+3. **Add a second Railway service** (same image, **same env vars as the API**) for the Celery worker — start command `celery -A app.worker:celery_app worker -l info`, run from `backend/` (use the colon form; the dotted form is ambiguous to Celery's resolver). Without it, ingestion/synthesis tasks enqueue but never run.
 4. Confirm `GET https://<railway>/health` → 200.
 
 ## Step 8 — Frontend (Vercel)
