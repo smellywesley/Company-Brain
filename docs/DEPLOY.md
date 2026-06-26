@@ -17,7 +17,7 @@ Use the two values for `SKILL_SIGNING_KEY` and `AUDIT_HMAC_SECRET`.
 1. supabase.com → **New project**. Region near your users; strong DB password.
 2. Settings → Database → **Connection string (URI)**.
 3. Capture `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, host, port.
-4. Ensure the user can `CREATE TABLE` — the app bootstraps schema via `create_all` on first boot.
+4. Ensure the user can `CREATE TABLE` — schema is applied by Alembic (`alembic upgrade head`, Step 7), not implicit `create_all` (which stays off in prod via `AUTO_CREATE_SCHEMA`).
 
 ## Step 3 — Upstash (Redis)
 1. upstash.com → **Create Redis database** (matching region).
@@ -41,14 +41,17 @@ Use the two values for `SKILL_SIGNING_KEY` and `AUDIT_HMAC_SECRET`.
    - `ENVIRONMENT=production`
    - `SKILL_SIGNING_KEY`, `AUDIT_HMAC_SECRET` (Step 1)
    - `AUTH_BYPASS_DEV` → **leave unset**
+   - `AUTO_CREATE_SCHEMA=false` (Alembic owns the schema in prod — no implicit DDL at boot)
    - `TRUSTED_PROXY_COUNT=1` (behind Railway's edge)
    - `OIDC_ISSUER`, `OIDC_AUDIENCE`
    - `POSTGRES_*`, `CELERY_BROKER_URL`, `WEAVIATE_URL`/`WEAVIATE_API_KEY`, `NEO4J_*`
    - `LLM_PROVIDER`, `LLM_API_KEY`
    - `BACKEND_URL` = the Railway public URL (set after first deploy, then redeploy)
    - `FRONTEND_ORIGIN` = the Vercel URL (Step 8)
-3. **Add a second Railway service** (same image, **same env vars as the API**) for the Celery worker — start command `celery -A app.worker:celery_app worker -l info`, run from `backend/` (use the colon form; the dotted form is ambiguous to Celery's resolver). Without it, ingestion/synthesis tasks enqueue but never run.
-4. Confirm `GET https://<railway>/health` → 200.
+3. **Add a second Railway service** (same image, **same env vars as the API**) for the Celery worker — start command `celery -A app.worker:celery_app worker -l info`, run from `backend/` (use the colon form; the dotted form is ambiguous to Celery's resolver). Without it, ingestion/synthesis tasks enqueue but never run. (Compose users: the `worker` service is already wired in `docker-compose.yml`.)
+4. **Run migrations** (Alembic owns the schema). One-off from `backend/` against the prod DB: first time, generate + commit the initial revision —
+   `DATABASE_URL=<supabase-url> alembic revision --autogenerate -m "initial schema"`, then on every deploy `DATABASE_URL=<supabase-url> alembic upgrade head`.
+5. Confirm `GET https://<railway>/health` → 200.
 
 ## Step 8 — Frontend (Vercel)
 1. vercel.com → New Project → import repo → **Root Directory = `frontend`** (Next.js auto-detected).

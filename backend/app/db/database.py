@@ -93,13 +93,28 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Create all tables (called once at application startup)."""
+    """Create all tables at startup — unless schema is managed by migrations.
+
+    Gated by ``AUTO_CREATE_SCHEMA``. When unset, it defaults ON in dev/local
+    (convenience) and OFF in production, where Alembic owns the schema
+    (``alembic upgrade head``). Set ``AUTO_CREATE_SCHEMA=true`` to force it on.
+    Implicit DDL at boot is a footgun in prod (races between replicas, no
+    review, no rollback), which is why production defaults to migrations.
+    """
+    from app.services.security.secret_config import is_production
+
+    flag = os.getenv("AUTO_CREATE_SCHEMA")
+    enabled = (flag.strip().lower() in ("1", "true", "yes", "on")) if flag is not None else (not is_production())
+    if not enabled:
+        logger.info("AUTO_CREATE_SCHEMA off — skipping create_all (Alembic manages the schema)")
+        return
+
     engine = get_engine()
     async with engine.begin() as conn:
         # Import all models so they register with Base.metadata
         from app.db import models  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables initialised")
+    logger.info("Database tables initialised (create_all)")
 
 
 async def close_db() -> None:

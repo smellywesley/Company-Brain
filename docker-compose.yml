@@ -66,6 +66,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cb_admin}:${POSTGRES_PASSWORD:-change-me-in-production}@postgres:5432/${POSTGRES_DB:-companybrain}
       - DATABASE_URL_SYNC=postgresql://${POSTGRES_USER:-cb_admin}:${POSTGRES_PASSWORD:-change-me-in-production}@postgres:5432/${POSTGRES_DB:-companybrain}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0
     depends_on:
       weaviate:
         condition: service_healthy
@@ -85,6 +86,52 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    networks:
+      - brain-net
+
+  # ---------------------------------------------------------------------------
+  # Celery worker – consumes ingestion / skill-discovery / feedback /
+  # contradiction tasks. The API enqueues; without this service those tasks
+  # are never processed.
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cb-worker
+    restart: unless-stopped
+    command: ["celery", "-A", "app.worker:celery_app", "worker", "-l", "info", "--concurrency=4"]
+    env_file:
+      - .env
+    environment:
+      - WEAVIATE_URL=http://weaviate:8080
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_AUTH=${NEO4J_AUTH}
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=${VAULT_TOKEN}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - NOTION_API_KEY=${NOTION_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-cb_admin}:${POSTGRES_PASSWORD:-change-me-in-production}@postgres:5432/${POSTGRES_DB:-companybrain}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      weaviate:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.worker:celery_app inspect ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks:
       - brain-net
 
@@ -288,7 +335,11 @@ services:
     restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6379}:6379"
-    command: redis-server --requirepass ${REDIS_PASSWORD:-change-me-redis} --maxmemory 256mb --maxmemory-policy allkeys-lru
+    # noeviction (not allkeys-lru): this Redis is the Celery broker AND holds
+    # quarantine safety-locks — neither may be silently evicted under memory
+    # pressure (a dropped lock un-quarantines a skill). AOF on for durability
+    # across restarts. Managed Redis (Upstash) must likewise be noeviction.
+    command: redis-server --requirepass ${REDIS_PASSWORD:-change-me-redis} --maxmemory 512mb --maxmemory-policy noeviction --appendonly yes
     volumes:
       - redis-data:/data
     healthcheck:
