@@ -210,7 +210,9 @@ class WorkflowAgent(BaseAgent):
         if executor:
             audit.append(self._log(f"Step 4 – executing action '{action_type}'"))
             try:
-                exec_result = await executor(candidate_action.get("parameters", {}))
+                # Inject tenant identity so executors can fetch per-tenant creds.
+                exec_params = {**candidate_action.get("parameters", {}), "_tenant_id": tenant_id}
+                exec_result = await executor(exec_params)
                 steps.append(WorkflowStep(name="execution", status="success", output=exec_result))
                 audit.append(self._log("Action executed successfully"))
             except Exception as exc:

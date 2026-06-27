@@ -110,10 +110,16 @@ async def run_governed_workflow(
     # 3. Build the agents and run the governed pipeline.
     from app.agents.critic_agent import CriticAgent
     from app.agents.workflow_agent import WorkflowAgent
+    from app.services.executors.registry import load_executors
 
     llm = _get_llm()
     critic = CriticAgent(llm=llm, tenant_rules=tenant_settings.get("critic_rules") or None)
-    workflow = WorkflowAgent(llm=llm, critic=critic, workflow_name=workflow_name)
+    workflow = WorkflowAgent(
+        llm=llm,
+        critic=critic,
+        workflow_name=workflow_name,
+        action_executors=load_executors(),
+    )
 
     try:
         result = await workflow.execute_workflow(
