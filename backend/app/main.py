@@ -227,6 +227,7 @@ async def trigger_ingest(
     import ingestion.slack_connector  # noqa: F401
     import ingestion.notion_connector  # noqa: F401
     import ingestion.github_connector  # noqa: F401
+    import ingestion.zendesk_connector  # noqa: F401
     from ingestion.base_connector import ConnectorRegistry
 
     try:
@@ -560,6 +561,7 @@ async def list_connectors(
     import ingestion.slack_connector  # noqa: F401
     import ingestion.notion_connector  # noqa: F401
     import ingestion.github_connector  # noqa: F401
+    import ingestion.zendesk_connector  # noqa: F401
     from ingestion.base_connector import ConnectorRegistry
 
     return JSONResponse({

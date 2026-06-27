@@ -8,18 +8,55 @@ and register themselves via the ``ConnectorRegistry``.
 from __future__ import annotations
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from presidio_analyzer import AnalyzerEngine
-from presidio_anonymizer import AnonymizerEngine
-
 logger = logging.getLogger(__name__)
 
-# ── Shared PII engines (initialised once per process) ──────────────────────
-_analyzer = AnalyzerEngine()
-_anonymizer = AnonymizerEngine()
+# ── PII redaction (Presidio preferred, regex fallback) ───────────────────────
+# Presidio + its spaCy model is heavy and not installed everywhere (the lean API
+# image, dev boxes, CI). So it is imported LAZILY and, when unavailable, we fall
+# back to a regex redactor — never crash on import, never silently ship PII. The
+# ingestion/worker image installs presidio (requirements.txt) and gets the full
+# engine; everything else degrades to regex. Sentinel values for the cache:
+# None = not yet probed, False = unavailable, tuple = (analyzer, anonymizer).
+_PII_ENGINES: Any = None
+
+# Run most-specific patterns first so a 9-digit SSN / 16-digit card isn't eaten
+# by the phone matcher. Tags mirror Presidio's entity labels for consistency.
+_REGEX_PII: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "<US_SSN>"),
+    (re.compile(r"\b(?:\d[ -]?){13,16}\b"), "<CREDIT_CARD>"),
+    (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "<EMAIL_ADDRESS>"),
+    (re.compile(r"(?:\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b"), "<PHONE_NUMBER>"),
+]
+
+
+def _get_pii_engines() -> Any:
+    """Lazily build the Presidio engines once; cache False if unavailable."""
+    global _PII_ENGINES
+    if _PII_ENGINES is None:
+        try:
+            from presidio_analyzer import AnalyzerEngine
+            from presidio_anonymizer import AnonymizerEngine
+
+            _PII_ENGINES = (AnalyzerEngine(), AnonymizerEngine())
+            logger.info("PII redaction: using Presidio engine")
+        except Exception as exc:  # noqa: BLE001 — any import/init failure → fallback
+            logger.warning(
+                "PII redaction: Presidio unavailable (%s) — using regex fallback", exc
+            )
+            _PII_ENGINES = False
+    return _PII_ENGINES
+
+
+def _regex_redact(text: str) -> str:
+    """Deterministic regex PII scrub (email, phone, SSN, card)."""
+    for pattern, tag in _REGEX_PII:
+        text = pattern.sub(tag, text)
+    return text
 
 
 @dataclass
@@ -63,14 +100,24 @@ class BaseConnector(ABC):
     # ── Shared helpers ──────────────────────────────────────────────────────
     @staticmethod
     def redact_pii(text: str) -> str:
-        """Strip personally‑identifiable information from *text*."""
+        """Strip PII from *text* — Presidio when available, else regex fallback.
+
+        Never raises: a redaction error must not abort ingestion, but it must
+        also not leak, so on Presidio failure we still run the regex scrub.
+        """
         if not text:
             return text
-        results = _analyzer.analyze(text=text, language="en")
-        if not results:
-            return text
-        anonymized = _anonymizer.anonymize(text=text, analyzer_results=results)
-        return anonymized.text
+        engines = _get_pii_engines()
+        if engines:
+            analyzer, anonymizer = engines
+            try:
+                results = analyzer.analyze(text=text, language="en")
+                if not results:
+                    return text
+                return anonymizer.anonymize(text=text, analyzer_results=results).text
+            except Exception:  # noqa: BLE001
+                logger.exception("Presidio redaction failed; using regex fallback")
+        return _regex_redact(text)
 
     def ingest_all(self) -> list[NormalizedDocument]:
         """Full pipeline: authenticate → fetch → normalise → return."""
