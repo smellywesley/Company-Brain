@@ -121,6 +121,10 @@ app.include_router(oauth_router)
 from app.routes.webhooks import router as webhooks_router
 app.include_router(webhooks_router)
 
+# Register Integrations Router (manual-credential connect)
+from app.routes.integrations import router as integrations_router
+app.include_router(integrations_router)
+
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
