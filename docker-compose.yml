@@ -136,6 +136,32 @@ services:
       - brain-net
 
   # ---------------------------------------------------------------------------
+  # Celery beat – recurring-workflow scheduler. Emits the every-60s scheduler
+  # tick that fans out *governed* runs for due tenant schedules. MUST be a
+  # singleton (exactly one replica) — two beats would double-fire every
+  # schedule. Workers do the actual run; beat only enqueues, so it needs the
+  # broker, not the data stores.
+  # ---------------------------------------------------------------------------
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cb-beat
+    restart: unless-stopped
+    command: ["celery", "-A", "app.worker:celery_app", "beat", "-l", "info", "-s", "/tmp/celerybeat-schedule"]
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0
+      - SCHEDULER_TICK_SECONDS=${SCHEDULER_TICK_SECONDS:-60}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - brain-net
+
+  # ---------------------------------------------------------------------------
   # Weaviate – Vector database
   # ---------------------------------------------------------------------------
   weaviate:

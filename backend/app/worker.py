@@ -14,7 +14,6 @@ import os
 import uuid
 
 from celery import Celery
-from asgiref.sync import async_to_sync
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +173,23 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=3600,  # 1 hour max per task
 )
+
+# ── Celery beat: recurring-workflow scheduler ────────────────────────────────
+# A single lightweight tick runs every 60s and fans out *governed* workflow
+# runs for any tenant schedule that is due (see app.services.scheduler). The
+# tick itself does almost no work — it only finds due schedules and enqueues a
+# child task — so it is safe to run frequently. Per-tenant cadence lives in
+# tenant.settings, so this static beat entry supports arbitrary dynamic
+# schedules without RedBeat/django-celery-beat. Run with a SINGLE beat process
+# (the `beat` service in docker-compose / a dedicated Railway service); workers
+# may scale freely.
+_SCHEDULER_TICK_SECONDS = float(os.getenv("SCHEDULER_TICK_SECONDS", "60"))
+celery_app.conf.beat_schedule = {
+    "scheduler-tick": {
+        "task": "tasks.scheduler_tick",
+        "schedule": _SCHEDULER_TICK_SECONDS,
+    },
+}
 
 
 def _run_async(coro):
@@ -538,8 +554,127 @@ def accumulate_llm_cost(self, tenant_id_str: str, cost: float, input_tokens: int
             
             flag_modified(tenant, "settings")
             logger.info(
-                "Tenant %s accumulated cost updated to %f USD", 
+                "Tenant %s accumulated cost updated to %f USD",
                 tenant_id_str, tenant.settings["accumulated_llm_cost"]
             )
-            
+
     return _run_async(_do_accumulate())
+
+
+# ── Scheduler (Celery beat) ──────────────────────────────────────────────────
+
+@celery_app.task(bind=True, name="tasks.scheduler_tick")
+def scheduler_tick(self):
+    """Beat-driven tick: enqueue a governed run for every due tenant schedule.
+
+    Scans active tenants, finds schedules in ``tenant.settings["schedules"]``
+    that are due, enqueues ``tasks.execute_scheduled_workflow`` for each, and
+    stamps ``last_run_at`` so the same slot is not fired twice. The heavy work
+    (agents, critic, persistence) happens in the child task; this stays cheap.
+
+    ``last_run_at`` is advanced at enqueue time on purpose: if a child run fails
+    it is recorded as an errored WorkflowRun and retried on the next cadence,
+    rather than re-fired every 60s.
+    """
+    async def _do_tick():
+        from datetime import datetime, timezone
+        from sqlalchemy import select
+        from sqlalchemy.orm.attributes import flag_modified
+        from app.db.database import get_db_session
+        from app.db.models import Tenant
+        from app.services.scheduler.schedules import due_schedules
+
+        enqueued = 0
+        now = datetime.now(timezone.utc)
+        async with get_db_session() as session:
+            result = await session.execute(select(Tenant).where(Tenant.is_active.is_(True)))
+            tenants = result.scalars().all()
+            for tenant in tenants:
+                settings = tenant.settings or {}
+                schedules = settings.get("schedules") or []
+                if not schedules:
+                    continue
+                due = due_schedules(schedules, now=now)
+                if not due:
+                    continue
+                for sched in due:
+                    try:
+                        celery_app.send_task(
+                            "tasks.execute_scheduled_workflow",
+                            args=[str(tenant.id), sched],
+                            queue="default",
+                        )
+                        # Mutate in place so the write-back persists the stamp.
+                        sched["last_run_at"] = now.isoformat()
+                        sched["last_status"] = "enqueued"
+                        enqueued += 1
+                    except Exception:
+                        logger.exception(
+                            "scheduler_tick: failed to enqueue schedule %s for tenant %s",
+                            sched.get("id"), tenant.id,
+                        )
+                settings["schedules"] = schedules
+                tenant.settings = settings
+                flag_modified(tenant, "settings")
+        if enqueued:
+            logger.info("scheduler_tick: enqueued %d due workflow run(s)", enqueued)
+        return enqueued
+
+    return _run_async(_do_tick())
+
+
+@celery_app.task(bind=True, name="tasks.execute_scheduled_workflow")
+def execute_scheduled_workflow(self, tenant_id_str: str, schedule: dict):
+    """Run one scheduled workflow through the **governed** loop.
+
+    Delegates to the shared runner so a scheduled run is critic-gated,
+    approval-gated, and audited exactly like an API-triggered one — there is no
+    ungoverned scheduled path (docs/POSITIONING.md, Governed Action pillar).
+    """
+    schedule = schedule or {}
+    sched_id = schedule.get("id") or schedule.get("name") or "schedule"
+    workflow_name = schedule.get("workflow") or "scheduled"
+    logger.info(
+        "Celery: executing scheduled workflow '%s' (%s) for tenant %s",
+        workflow_name, sched_id, tenant_id_str,
+    )
+
+    async def _do_run():
+        from app.db.database import get_db_session
+        from app.db.models import Tenant
+        from app.services.workflow.runner import run_governed_workflow
+
+        tenant_uuid = uuid.UUID(tenant_id_str)
+        async with get_db_session() as session:
+            tenant = await session.get(Tenant, tenant_uuid)
+            if tenant is None:
+                logger.error("scheduled workflow: tenant %s not found", tenant_id_str)
+                return None
+            tenant_settings = dict(tenant.settings or {})
+
+        summary = schedule.get("name") or workflow_name
+        trigger_data = {
+            "summary": summary,
+            "scheduled": True,
+            "schedule_id": schedule.get("id"),
+            **(schedule.get("trigger_data") or {}),
+        }
+        config = {
+            "context_queries": schedule.get("context_queries") or [summary],
+            **(schedule.get("config") or {}),
+        }
+        result = await run_governed_workflow(
+            tenant_id=tenant_uuid,
+            tenant_settings=tenant_settings,
+            workflow_name=workflow_name,
+            trigger_data=trigger_data,
+            config=config,
+            triggered_by=f"scheduler:{sched_id}",
+        )
+        logger.info(
+            "Scheduled workflow '%s' for tenant %s -> %s (run %s)",
+            workflow_name, tenant_id_str, result.get("status"), result.get("run_id"),
+        )
+        return result.get("status")
+
+    return _run_async(_do_run())

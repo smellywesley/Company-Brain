@@ -35,12 +35,8 @@ from app.db.database import init_db, close_db, get_db_session
 from app.db.models import Tenant, WorkflowRun, FeedbackRecord, Skill, IngestionCursor
 from app.db.tenancy import resolve_tenant
 
-# Agents
-from app.agents.llm_adapter import LLMAdapter
-from app.agents.critic_agent import CriticAgent
-from app.agents.workflow_agent import WorkflowAgent
-from app.services.skills_generator.matcher import SkillMatcher
-from app.db.repositories.skill_repo import SkillRepo
+# Governed workflow execution (agents, critic, skill match, persistence) lives
+# in app.services.workflow.runner; routes delegate to it (imported where used).
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -124,19 +120,6 @@ app.include_router(oauth_router)
 # Register Webhooks Router
 from app.routes.webhooks import router as webhooks_router
 app.include_router(webhooks_router)
-
-
-# ---------------------------------------------------------------------------
-# Helper: get LLM adapter from environment
-# ---------------------------------------------------------------------------
-
-def _get_llm() -> LLMAdapter:
-    """Create an LLMAdapter from environment variables."""
-    return LLMAdapter(
-        provider=os.getenv("LLM_PROVIDER", "gemini"),
-        api_key=os.getenv("LLM_API_KEY", ""),
-        model=os.getenv("LLM_MODEL", ""),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -372,103 +355,37 @@ async def run_workflow(
     3. Executes the full pipeline (retrieve → generate → critique → act)
     4. Persists the result to PostgreSQL
     """
-    start = time.monotonic()
-    
-    # 1. Resolve Tenant & Match Skill
-    matched_skill_def = None
-    matched_skill_id = None
-    
-    tenant_id = None
-    tenant_settings: dict[str, Any] = {}
+    # Delegate to the single governed-workflow runner so the API path and the
+    # Celery scheduler share one critic-gated, approval-gated, audited loop —
+    # there is no second, ungoverned path (docs/POSITIONING.md, Governed Action).
+    from app.services.workflow.runner import run_governed_workflow
+
+    # Resolve the caller's tenant first (enforces auth + isolation). A 403/404
+    # from resolution must propagate untouched.
+    async with get_db_session() as session:
+        tenant = await resolve_tenant(request, session)
+        tenant_id = tenant.id
+        tenant_settings = dict(tenant.settings or {})
+
+    user = getattr(request.state, "user", None)
+    triggered_by = getattr(user, "email", None) or "system"
+
     try:
-        async with get_db_session() as session:
-            tenant = await resolve_tenant(request, session)
-            tenant_id = tenant.id
-            tenant_settings = dict(tenant.settings or {})
-
-            # Fetch active skills for THIS tenant and attempt match
-            repo = SkillRepo(session)
-            active_skills = await repo.list_active_for_tenant(tenant.id)
-
-            if active_skills:
-                matcher = SkillMatcher()
-                best_skill = matcher.match_skill(body.trigger_data, list(active_skills))
-                if best_skill:
-                    matched_skill_def = best_skill.definition
-                    matched_skill_id = best_skill.id
-    except HTTPException:
-        raise  # tenant resolution 403 — do not swallow
-    except Exception as exc:
-        logger.error("Failed to resolve tenant or match skills: %s", exc)
-        # Continue without a matched skill if DB fails (graceful degradation)
-        tenant_id = None
-
-    # 2. Setup Agents
-    llm = _get_llm()
-
-    tenant_rules = tenant_settings.get("critic_rules", []) if tenant_settings else None
-
-    critic = CriticAgent(llm=llm, tenant_rules=tenant_rules)
-    
-    workflow = WorkflowAgent(
-        llm=llm,
-        critic=critic,
-        workflow_name=name,
-    )
-
-    # 3. Execute Workflow
-    try:
-        result = await workflow.execute_workflow(
-            workflow_config=body.config,
+        result = await run_governed_workflow(
+            tenant_id=tenant_id,
+            tenant_settings=tenant_settings,
+            workflow_name=name,
             trigger_data=body.trigger_data,
-            matched_skill=matched_skill_def,
+            config=body.config,
+            triggered_by=triggered_by,
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Workflow '%s' failed", name)
         raise HTTPException(status_code=500, detail=f"Workflow execution failed: {exc}")
-    finally:
-        await llm.close()
 
-    elapsed_ms = (time.monotonic() - start) * 1000
-
-    # 4. Persist Results
-    try:
-        if tenant_id is not None:
-            async with get_db_session() as session:
-                run = WorkflowRun(
-                    tenant_id=tenant_id,
-                    workflow_name=name,
-                    skill_id=matched_skill_id,
-                    status=result.status,
-                    trigger_data=body.trigger_data,
-                    candidate_action=result.final_action,
-                    final_action=result.final_action,
-                    critic_approved=result.critic_verdict.approved if result.critic_verdict else None,
-                    critic_risk_score=result.critic_verdict.risk_score if result.critic_verdict else None,
-                    critic_reasons=result.critic_verdict.reasons if result.critic_verdict else [],
-                    steps_executed=[{"name": s.name, "status": s.status} for s in result.steps_executed],
-                    audit_trail=result.audit_trail,
-                    duration_ms=elapsed_ms,
-                    llm_cost_usd=llm.estimate_cost({}),
-                    triggered_by=getattr(getattr(request.state, "user", None), "email", "system") or "system",
-                )
-                session.add(run)
-    except Exception:
-        logger.exception("Failed to persist workflow run (non-fatal)")
-
-    return JSONResponse({
-        "workflow": result.workflow_name,
-        "status": result.status,
-        "steps": [{"name": s.name, "status": s.status} for s in result.steps_executed],
-        "critic": {
-            "approved": result.critic_verdict.approved if result.critic_verdict else None,
-            "risk_score": result.critic_verdict.risk_score if result.critic_verdict else None,
-            "reasons": result.critic_verdict.reasons if result.critic_verdict else [],
-        },
-        "final_action": result.final_action,
-        "duration_ms": round(elapsed_ms, 1),
-        "audit_trail": result.audit_trail,
-    })
+    return JSONResponse(result)
 
 
 # ---------------------------------------------------------------------------

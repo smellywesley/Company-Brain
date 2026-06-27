@@ -49,6 +49,7 @@ Use the two values for `SKILL_SIGNING_KEY` and `AUDIT_HMAC_SECRET`.
    - `BACKEND_URL` = the Railway public URL (set after first deploy, then redeploy)
    - `FRONTEND_ORIGIN` = the Vercel URL (Step 8)
 3. **Add a second Railway service** (same image, **same env vars as the API**) for the Celery worker — start command `celery -A app.worker:celery_app worker -l info`, run from `backend/` (use the colon form; the dotted form is ambiguous to Celery's resolver). Without it, ingestion/synthesis tasks enqueue but never run. (Compose users: the `worker` service is already wired in `docker-compose.yml`.)
+   - **Add a third service for the scheduler (Celery beat)** — start command `celery -A app.worker:celery_app beat -l info -s /tmp/celerybeat-schedule`, needs only `CELERY_BROKER_URL`. It emits the every-60s scheduler tick that runs due recurring workflows (Analyst digests, monitors). **Run exactly one beat replica** — two would double-fire every schedule. Without it, scheduled workflows never trigger (manual `/workflow/{name}` still works). (Compose users: the `beat` service is already wired in `docker-compose.yml`.)
 4. **Run migrations** (Alembic owns the schema). One-off from `backend/` against the prod DB: first time, generate + commit the initial revision —
    `DATABASE_URL=<supabase-url> alembic revision --autogenerate -m "initial schema"`, then on every deploy `DATABASE_URL=<supabase-url> alembic upgrade head`.
 5. Confirm `GET https://<railway>/health` → 200.
