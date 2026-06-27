@@ -50,6 +50,11 @@ export interface ConnectorsResponse {
   connectors: string[];
 }
 
+export interface IntegrationsResponse {
+  connected: string[];
+  available: string[];
+}
+
 export interface SkillSummary {
   id: string;
   name: string;
@@ -428,6 +433,24 @@ class CompanyBrainAPI {
 
   async getConnectors(): Promise<ConnectorsResponse> {
     return this.request<ConnectorsResponse>("GET", "/connectors");
+  }
+
+  /** Absolute base URL for full-page navigations (e.g. OAuth redirect flows). */
+  get oauthBase(): string {
+    return this.baseUrl;
+  }
+
+  async getIntegrations(): Promise<IntegrationsResponse> {
+    return this.request<IntegrationsResponse>("GET", "/integrations");
+  }
+
+  async saveCredentials(
+    provider: string,
+    credentials: Record<string, string>,
+  ): Promise<{ status: string }> {
+    return this.request("POST", `/integrations/${provider}/credentials`, {
+      credentials,
+    });
   }
 
   async getSkills(): Promise<SkillsResponse> {

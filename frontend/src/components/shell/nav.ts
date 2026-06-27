@@ -4,6 +4,7 @@ import {
   ScrollText,
   Boxes,
   GitPullRequestArrow,
+  Plug,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -52,6 +53,12 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: ScrollText,
         description:
           "Cryptographically chained record of every retrieve → act decision.",
+      },
+      {
+        label: "Connectors",
+        href: "/connectors",
+        icon: Plug,
+        description: "Connect Slack, Notion, GitHub, and your action providers.",
       },
       {
         label: "Skills & Connectors",
