@@ -13,6 +13,14 @@
 *.p12
 *.keystore
 *.truststore
+local_secrets.json
+
+# ── Terraform (state/vars hold resolved secrets) ─────────────────────────────
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
 
 # ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
