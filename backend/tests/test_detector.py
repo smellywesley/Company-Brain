@@ -115,8 +115,11 @@ class _FakeRedis:
         return 1 if self.store.pop(key, None) is not None else 0
 
 
+# These TTL tests exercise the Redis *cache* layer in the lean env (no asyncpg),
+# so they opt into the dev-only Redis-only escape hatch explicitly.
 def test_soft_lock_has_default_ttl(monkeypatch):
     """A normal quarantine self-heals: set() is called with ex=24h."""
+    monkeypatch.setenv("QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV", "true")
     fake = _FakeRedis()
     monkeypatch.setattr(quarantine, "_client", fake)
     quarantine.acquire_sync("t1", "s1", pr_ref="PR #1", summary="x")
@@ -125,6 +128,7 @@ def test_soft_lock_has_default_ttl(monkeypatch):
 
 def test_permanent_lock_opt_in(monkeypatch):
     """ttl_seconds=None makes a permanent lock (no expiry) for confirmed cases."""
+    monkeypatch.setenv("QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV", "true")
     fake = _FakeRedis()
     monkeypatch.setattr(quarantine, "_client", fake)
     quarantine.acquire_sync("t1", "s1", pr_ref="PR #1", summary="x", ttl_seconds=None)
@@ -132,6 +136,7 @@ def test_permanent_lock_opt_in(monkeypatch):
 
 
 def test_custom_ttl_passthrough(monkeypatch):
+    monkeypatch.setenv("QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV", "true")
     fake = _FakeRedis()
     monkeypatch.setattr(quarantine, "_client", fake)
     quarantine.acquire_sync("t1", "s1", pr_ref="PR #1", summary="x", ttl_seconds=3600)

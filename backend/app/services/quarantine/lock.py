@@ -15,6 +15,12 @@ This two-layer design means:
 - Locks survive Redis restarts, eviction-policy changes, and memory pressure.
 - A Redis miss always falls back to Postgres — the lock is never silently lost.
 
+PRODUCTION SAFETY: a safety lock must never live in Redis alone (Redis is a
+cache, not durable). If ``asyncpg`` / Postgres is unavailable, ``acquire`` and
+``release`` **fail closed** (raise) rather than silently degrade to Redis-only.
+A Redis-only path exists *only* for local dev and must be opted into with
+``QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV=true`` (ignored in production).
+
 Key schema (Redis cache / logging):  ``quarantine:{tenant_id}:{skill_id}``
 """
 
@@ -109,6 +115,18 @@ def _db_url() -> str:
 
 def _pg_available() -> bool:
     return _asyncpg is not None
+
+
+def _redis_only_allowed() -> bool:
+    """Redis-only safety locks are unsafe; permit them only when explicitly
+    enabled in a non-production environment. Always False in production."""
+    from app.services.security.secret_config import is_production
+
+    if is_production():
+        return False
+    return os.getenv("QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV", "false").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 async def _pg_acquire(
@@ -211,16 +229,30 @@ def acquire_sync(
     locked_by: str = "contradiction-worker",
     ttl_seconds: int | None = _DEFAULT_TTL_SECONDS,
 ) -> str:
-    """Place a quarantine lock. Postgres is written first; Redis cache updated after."""
+    """Place a quarantine lock. Postgres is the durable source of truth and is
+    written first; the Redis cache is updated after.
+
+    Fails closed: if Postgres is unavailable and the dev Redis-only escape hatch
+    is not enabled, this raises rather than placing an unsafe lock.
+    """
     if _pg_available():
         try:
             _run(_pg_acquire(tenant_id, skill_id, pr_ref, summary, severity, locked_by, ttl_seconds))
         except Exception:  # noqa: BLE001
             logger.error("Postgres quarantine write failed for %s:%s — lock NOT placed", tenant_id, skill_id)
             raise  # fail closed: if Postgres fails, don't silently succeed via cache only
+    elif _redis_only_allowed():
+        logger.warning(
+            "QUARANTINE LOCK IS REDIS-ONLY for %s:%s (asyncpg unavailable) — "
+            "NOT PRODUCTION SAFE; lock can be lost on Redis restart/eviction.",
+            tenant_id, skill_id,
+        )
     else:
-        # ponytail: asyncpg absent (lean env) — Redis-only path; acceptable in dev/test, not prod
-        logger.warning("asyncpg unavailable — quarantine lock is Redis-only for %s:%s", tenant_id, skill_id)
+        raise RuntimeError(
+            "Quarantine lock requires Postgres (asyncpg). A safety lock must not "
+            "live in Redis alone. Install asyncpg / set DATABASE_URL, or for local "
+            "dev only set QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV=true."
+        )
 
     payload = {
         "pr_ref": pr_ref,
@@ -269,6 +301,11 @@ def release_sync(tenant_id: str, skill_id: str) -> bool:
         except Exception:  # noqa: BLE001
             logger.error("Postgres quarantine release failed for %s:%s", tenant_id, skill_id)
             raise  # fail closed
+    elif not _redis_only_allowed():
+        raise RuntimeError(
+            "Quarantine lock release requires Postgres (asyncpg). Set DATABASE_URL, "
+            "or for local dev only set QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV=true."
+        )
 
     _redis_delete(tenant_id, skill_id)  # invalidate cache regardless
     if removed:

@@ -1,5 +1,11 @@
 """Initial schema — all tables including quarantine_locks.
 
+Idempotent: every object is created only if it does not already exist, so
+``alembic upgrade head`` is safe against BOTH a fresh database AND an existing
+database that was bootstrapped via ``create_all`` in earlier dev. This lets an
+existing deployment adopt migrations with a plain ``alembic upgrade head``
+(no manual ``alembic stamp head`` required, though that path also works).
+
 Revision ID: 0001
 Revises:
 Create Date: 2026-06-28
@@ -8,7 +14,8 @@ Create Date: 2026-06-28
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
+from alembic import context, op
+from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
 revision = "0001"
@@ -17,9 +24,40 @@ branch_labels = None
 depends_on = None
 
 
+# ── Idempotency helpers ───────────────────────────────────────────────────────
+# Online mode inspects the live DB so the migration is safe against an existing
+# schema. Offline mode (`alembic upgrade --sql`) has no connection to inspect, so
+# it emits a full fresh-DB script (the standard offline assumption).
+
+def _inspector():
+    return inspect(op.get_bind())
+
+
+def _has_table(name: str) -> bool:
+    if context.is_offline_mode():
+        return False
+    return name in _inspector().get_table_names()
+
+
+def _has_index(table: str, index: str) -> bool:
+    if context.is_offline_mode() or not _has_table(table):
+        return False
+    return any(ix["name"] == index for ix in _inspector().get_indexes(table))
+
+
+def _create_table_if_absent(name: str, *columns, **kw) -> None:
+    if not _has_table(name):
+        op.create_table(name, *columns, **kw)
+
+
+def _create_index_if_absent(index: str, table: str, columns: list[str]) -> None:
+    if not _has_index(table, index):
+        op.create_index(index, table, columns)
+
+
 def upgrade() -> None:
     # tenants
-    op.create_table(
+    _create_table_if_absent(
         "tenants",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("name", sa.String(255), nullable=False),
@@ -32,7 +70,7 @@ def upgrade() -> None:
     )
 
     # skills
-    op.create_table(
+    _create_table_if_absent(
         "skills",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False),
@@ -50,10 +88,10 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("tenant_id", "slug", name="uq_skill_tenant_slug"),
     )
-    op.create_index("ix_skill_tenant_status", "skills", ["tenant_id", "status"])
+    _create_index_if_absent("ix_skill_tenant_status", "skills", ["tenant_id", "status"])
 
     # skill_versions
-    op.create_table(
+    _create_table_if_absent(
         "skill_versions",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("skill_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("skills.id"), nullable=False),
@@ -64,10 +102,10 @@ def upgrade() -> None:
         sa.Column("changed_by", sa.String(255), default="system"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_skill_version_skill", "skill_versions", ["skill_id", "version"])
+    _create_index_if_absent("ix_skill_version_skill", "skill_versions", ["skill_id", "version"])
 
     # workflow_runs
-    op.create_table(
+    _create_table_if_absent(
         "workflow_runs",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False),
@@ -88,11 +126,11 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_workflow_tenant_status", "workflow_runs", ["tenant_id", "status"])
-    op.create_index("ix_workflow_tenant_created", "workflow_runs", ["tenant_id", "created_at"])
+    _create_index_if_absent("ix_workflow_tenant_status", "workflow_runs", ["tenant_id", "status"])
+    _create_index_if_absent("ix_workflow_tenant_created", "workflow_runs", ["tenant_id", "created_at"])
 
     # feedback_records
-    op.create_table(
+    _create_table_if_absent(
         "feedback_records",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False),
@@ -108,11 +146,11 @@ def upgrade() -> None:
         sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_feedback_tenant_created", "feedback_records", ["tenant_id", "created_at"])
-    op.create_index("ix_feedback_skill", "feedback_records", ["skill_id"])
+    _create_index_if_absent("ix_feedback_tenant_created", "feedback_records", ["tenant_id", "created_at"])
+    _create_index_if_absent("ix_feedback_skill", "feedback_records", ["skill_id"])
 
     # ingestion_cursors
-    op.create_table(
+    _create_table_if_absent(
         "ingestion_cursors",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False),
@@ -126,7 +164,7 @@ def upgrade() -> None:
     )
 
     # quarantine_locks — Postgres source of truth for contradiction handshake
-    op.create_table(
+    _create_table_if_absent(
         "quarantine_locks",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("tenant_id", sa.String(63), nullable=False),
@@ -139,14 +177,19 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.UniqueConstraint("tenant_id", "skill_id", name="uq_qlock_tenant_skill"),
     )
-    op.create_index("ix_qlock_tenant", "quarantine_locks", ["tenant_id"])
+    _create_index_if_absent("ix_qlock_tenant", "quarantine_locks", ["tenant_id"])
 
 
 def downgrade() -> None:
-    op.drop_table("quarantine_locks")
-    op.drop_table("ingestion_cursors")
-    op.drop_table("feedback_records")
-    op.drop_table("workflow_runs")
-    op.drop_table("skill_versions")
-    op.drop_table("skills")
-    op.drop_table("tenants")
+    # Only drop what exists, so downgrade is also safe to re-run.
+    for table in (
+        "quarantine_locks",
+        "ingestion_cursors",
+        "feedback_records",
+        "workflow_runs",
+        "skill_versions",
+        "skills",
+        "tenants",
+    ):
+        if context.is_offline_mode() or _has_table(table):
+            op.drop_table(table)
