@@ -20,7 +20,9 @@ class SkillSigner:
     """Signs and verifies skill definitions using HMAC-SHA256."""
 
     def __init__(self, signing_key: str | None = None) -> None:
-        self._key = (signing_key or os.getenv("SKILL_SIGNING_KEY", "")).encode("utf-8")
+        # Only fall back to env when caller passes None (not set), not when they explicitly pass ""
+        resolved = signing_key if signing_key is not None else os.getenv("SKILL_SIGNING_KEY", "")
+        self._key = resolved.encode("utf-8")
         if not self._key:
             logger.warning("SkillSigner: No signing key configured. Signatures will be empty.")
 

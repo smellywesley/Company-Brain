@@ -238,6 +238,41 @@ class FeedbackRecord(Base):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Quarantine Locks
+# ─────────────────────────────────────────────────────────────────────────────
+
+class QuarantineLock(Base):
+    """Postgres-durable source of truth for the Contradiction Handshake lock.
+
+    Redis carries a fast-read cache of these records (same TTL), but Postgres
+    is the primary store so locks survive Redis restarts, eviction policy
+    changes, or any memory-pressure scenario. The CriticAgent always checks
+    Postgres on a Redis miss.
+
+    ``skill_id`` is a free-form string (slug) so the lock module can operate
+    without a live DB session to look up the UUID — the slug matches the Redis
+    key schema used everywhere else.
+    """
+
+    __tablename__ = "quarantine_locks"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "skill_id", name="uq_qlock_tenant_skill"),
+        Index("ix_qlock_tenant", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(63), nullable=False)   # slug, not FK — lock module is infra-level
+    skill_id: Mapped[str] = mapped_column(String(127), nullable=False)
+    pr_ref: Mapped[str] = mapped_column(String(255), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    severity: Mapped[str] = mapped_column(String(31), default="high")
+    locked_by: Mapped[str] = mapped_column(String(127), default="contradiction-worker")
+    locked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # NULL = permanent (human-release only); set = soft lock that self-heals after the wall-clock time
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Ingestion Cursors
 # ─────────────────────────────────────────────────────────────────────────────
 
