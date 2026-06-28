@@ -94,8 +94,10 @@ as done:
 - **Weaviate native multi-tenancy** (per-tenant shards) — current isolation is property-filter
   level; verifying a rewrite needs a live Weaviate. (`test_integration_tenant_isolation.py`
   exists for the property-filter behavior.)
-- **Quarantine lock source-of-truth in Postgres** — currently Redis with `noeviction` + AOF
-  (eviction-safe), but not yet Postgres-backed.
+- ~~**Quarantine lock source-of-truth in Postgres**~~ — **Done (pass 2)**: `QuarantineLock`
+  ORM model added, `lock.py` rewritten to write Postgres first (asyncpg, lazy-imported so
+  lean env degrades gracefully to Redis-only) and read Redis → Postgres fallback. Fail-closed
+  on Postgres errors. Initial Alembic migration `0001_initial_schema.py` added.
 - **Observability**: structured logging exists; metrics (Prometheus/OTel) and Sentry are not
   wired — readiness/liveness probes added this pass.
 - **Per-tenant LLM budgets / rate caps** — cost is tracked (`accumulated_llm_cost`); hard
