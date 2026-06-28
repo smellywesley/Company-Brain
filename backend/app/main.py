@@ -55,6 +55,8 @@ logger = logging.getLogger("company_brain.api")
 async def lifespan(app: FastAPI):
     """Initialise database on startup, close on shutdown."""
     logger.info("Starting Company Brain backend...")
+    from app.services.observe.sentry import init_sentry
+    init_sentry()  # optional; no-op unless SENTRY_DSN + sentry-sdk present
     await init_db()
     logger.info("Database initialised")
     yield

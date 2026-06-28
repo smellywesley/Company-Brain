@@ -47,11 +47,14 @@ def get_engine():
     """Return the shared async engine (lazy-initialised)."""
     global _engine
     if _engine is None:
+        # Pool sizing is env-configurable so it can be right-sized to the managed
+        # Postgres connection limit (per-process pool × replicas must stay under
+        # it). Behind PgBouncer/Supabase pooler, keep these modest. See DEPLOY.md.
         _engine = create_async_engine(
             _get_database_url(),
             echo=os.getenv("DB_ECHO", "false").lower() == "true",
-            pool_size=20,
-            max_overflow=10,
+            pool_size=int(os.getenv("DB_POOL_SIZE", "20")),
+            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
             pool_pre_ping=True,  # Detect stale connections
             pool_recycle=3600,   # Recycle connections every hour
         )
