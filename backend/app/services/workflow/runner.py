@@ -65,6 +65,65 @@ async def _match_skill(tenant_id: uuid.UUID, trigger_data: dict[str, Any]):
     return None, None
 
 
+async def _blocked_run(
+    *,
+    tenant_id: uuid.UUID,
+    workflow_name: str,
+    trigger_data: dict[str, Any],
+    matched_skill_id: Any,
+    reason: str,
+    elapsed_ms: float,
+    triggered_by: str,
+    persist: bool,
+    budget: float,
+    spent: float,
+) -> dict[str, Any]:
+    """Return (and optionally persist) a run blocked before any LLM call.
+
+    Used when the tenant's LLM budget is exhausted. The action is never built or
+    executed; the run is recorded with status ``blocked`` for auditability.
+    """
+    run_id: str | None = None
+    if persist:
+        try:
+            from app.db.database import get_db_session
+            from app.db.models import WorkflowRun
+
+            async with get_db_session() as session:
+                run = WorkflowRun(
+                    tenant_id=tenant_id,
+                    workflow_name=workflow_name,
+                    skill_id=matched_skill_id,
+                    status="blocked",
+                    trigger_data=trigger_data,
+                    final_action=None,
+                    critic_approved=False,
+                    critic_risk_score=None,
+                    critic_reasons=[reason],
+                    steps_executed=[],
+                    audit_trail=[{"event": "budget_block", "reason": reason}],
+                    duration_ms=elapsed_ms,
+                    llm_cost_usd=0.0,
+                    triggered_by=triggered_by or "system",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = str(run.id)
+        except Exception:  # noqa: BLE001 — recording the block must not raise
+            logger.exception("runner: failed to persist blocked run (non-fatal)")
+
+    return {
+        "workflow": workflow_name,
+        "status": "blocked",
+        "steps": [],
+        "critic": {"approved": False, "risk_score": None, "reasons": [reason]},
+        "final_action": None,
+        "duration_ms": round(elapsed_ms, 1),
+        "audit_trail": [{"event": "budget_block", "reason": reason}],
+        "run_id": run_id,
+    }
+
+
 async def run_governed_workflow(
     *,
     tenant_id: uuid.UUID,
@@ -106,6 +165,30 @@ async def run_governed_workflow(
     if matched_skill_id is not None:
         enriched_config["skill_id"] = str(matched_skill_id)
     enriched_trigger = {**trigger_data, "tenant_id": str(tenant_id)}
+
+    # 2b. Per-tenant LLM budget gate — block before spending on the agents.
+    #     A blocked run is recorded (and audited) so the cap is observable.
+    from app.services.budget import BudgetExceededError, enforce_budget
+
+    try:
+        await enforce_budget(str(tenant_id))
+    except BudgetExceededError as exc:
+        elapsed_ms = (time.monotonic() - start) * 1000.0
+        logger.warning(
+            "runner: workflow '%s' blocked — tenant %s over LLM budget", workflow_name, tenant_id
+        )
+        return await _blocked_run(
+            tenant_id=tenant_id,
+            workflow_name=workflow_name,
+            trigger_data=trigger_data,
+            matched_skill_id=matched_skill_id,
+            reason="Monthly LLM budget reached for this workspace.",
+            elapsed_ms=elapsed_ms,
+            triggered_by=triggered_by,
+            persist=persist,
+            budget=exc.budget,
+            spent=exc.spent,
+        )
 
     # 3. Build the agents and run the governed pipeline.
     from app.agents.critic_agent import CriticAgent

@@ -130,6 +130,15 @@ async def _run_contradiction_handshake(session, tenant_id_str: str, pr: dict) ->
             # conflict.
             if changed_paths or patch_text:
                 tier0 = detector.detect(changed_paths, patch_text, sop_text)
+                # Structured, auditable decision log (the detector itself is pure).
+                logger.info(
+                    "contradiction.tier0 tenant=%s skill=%s pr=%s overlap=%s "
+                    "confidence=%.2f matched=%s",
+                    tenant_id_str, skill.id, pr_ref,
+                    tier0["has_structural_overlap"],
+                    tier0["signal"]["confidence"],
+                    tier0["matched_entities"],
+                )
                 if not tier0["has_structural_overlap"]:
                     continue
 
@@ -531,31 +540,42 @@ def accumulate_llm_cost(self, tenant_id_str: str, cost: float, input_tokens: int
         from app.db.models import Tenant
         from uuid import UUID
         from sqlalchemy.orm.attributes import flag_modified
-        
+        from app.services.budget.limiter import current_period
+
         tenant_uuid = UUID(tenant_id_str)
         async with get_db_session() as session:
             tenant = await session.get(Tenant, tenant_uuid)
             if not tenant:
                 logger.error("Tenant %s not found for cost accumulation", tenant_id_str)
                 return
-                
+
             if tenant.settings is None:
                 tenant.settings = {}
-                
-            tenant.settings["accumulated_llm_cost"] = round(
-                tenant.settings.get("accumulated_llm_cost", 0.0) + cost, 6
-            )
-            tenant.settings["total_input_tokens"] = (
-                tenant.settings.get("total_input_tokens", 0) + input_tokens
-            )
-            tenant.settings["total_output_tokens"] = (
-                tenant.settings.get("total_output_tokens", 0) + output_tokens
-            )
-            
+
+            # Monthly rollover: this task is the single writer of the spend
+            # window, so it owns the reset. When the calendar month changes,
+            # start a fresh accumulation window (this call is the first entry).
+            period = current_period()
+            if tenant.settings.get("cost_period_start") != period:
+                tenant.settings["cost_period_start"] = period
+                tenant.settings["accumulated_llm_cost"] = round(cost, 6)
+                tenant.settings["total_input_tokens"] = input_tokens
+                tenant.settings["total_output_tokens"] = output_tokens
+            else:
+                tenant.settings["accumulated_llm_cost"] = round(
+                    tenant.settings.get("accumulated_llm_cost", 0.0) + cost, 6
+                )
+                tenant.settings["total_input_tokens"] = (
+                    tenant.settings.get("total_input_tokens", 0) + input_tokens
+                )
+                tenant.settings["total_output_tokens"] = (
+                    tenant.settings.get("total_output_tokens", 0) + output_tokens
+                )
+
             flag_modified(tenant, "settings")
             logger.info(
-                "Tenant %s accumulated cost updated to %f USD",
-                tenant_id_str, tenant.settings["accumulated_llm_cost"]
+                "Tenant %s accumulated cost (period %s) updated to %f USD",
+                tenant_id_str, period, tenant.settings["accumulated_llm_cost"]
             )
 
     return _run_async(_do_accumulate())
