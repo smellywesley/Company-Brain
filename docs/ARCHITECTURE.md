@@ -54,8 +54,8 @@ exactly what it did and why is a category of its own.
 │ PostgreSQL │  │  Weaviate  │  │   Neo4j    │  │   Redis     │
 │ tenants,   │  │  vector    │  │ knowledge  │  │ Celery broker│
 │ skills,    │  │  search    │  │   graph    │  │ + rate limit │
-│ runs,      │  │ (per-tenant│  │ (entities, │  │              │
-│ feedback   │  │ namespaces)│  │ relations) │  │              │
+│ runs,      │  │ (tenant_id │  │ (entities, │  │              │
+│ feedback   │  │  scoped)   │  │ relations) │  │              │
 └────────────┘  └────────────┘  └────────────┘  └─────────────┘
        ▲                ▲                              │
        │                │                              │
@@ -67,8 +67,8 @@ exactly what it did and why is a category of its own.
 │  → Weaviate upsert + Neo4j entity extraction   │  │  cost accounting  │
 └───────────────────────────────────────────────┘  └──────────────────┘
                                                             ▲
-                                          Kafka (message bus, async events)
-                                          Vault (secrets) · Langfuse (LLM traces)
+                                          Kafka (optional bus — Celery+Redis carries the task path)
+                                          Vault (dev-mode only) · Langfuse (LLM traces)
 ```
 
 ---
@@ -86,7 +86,7 @@ Slack / Notion / GitHub
   normalize() → NormalizedDocument
         │
         ▼
-  redact_pii()  (Presidio strips names, emails, SSNs before anything is stored)
+  redact_pii()  (PII scrubbed before storage — Presidio if installed, else a regex fallback)
         │
         ├──► chunk → embed → Weaviate     (semantic recall)
         └──► entity extraction → Neo4j     (who/what/how relationships)
@@ -185,13 +185,21 @@ JWT (Okta / OIDC)  ──►  OIDCAuthMiddleware verifies sig + exp + aud + iss
 Defense layers, each its own middleware:
 - **AuthN** — OIDC/JWT, RS256/ES256, JWKS-cached, audience + issuer verified.
 - **AuthZ** — YAML RBAC (admin / manager / engineer / viewer), deny by default.
-- **Isolation** — tenant-scoped queries; per-tenant Weaviate namespaces; cross-tenant
-  access returns 404, not 403 (don't reveal another tenant's data exists).
+- **Isolation** — every query is tenant-scoped (filtered by `tenant.id`). Weaviate uses a
+  single collection with a **mandatory `tenant_id` property filter** on every search (an
+  empty/absent tenant yields no results); a cross-tenant id returns 404, not 403. NOTE:
+  this is property-level isolation, **not** Weaviate native multi-tenancy (per-tenant
+  shards) — that move is a tracked hardening item, see `docs/IMPLEMENTATION_REPORT.md`.
 - **Input** — XSS / SQL-injection detection + HTML stripping before routes see the body.
 - **Audit** — every request and every agent action written as an HMAC-SHA256 chained
   JSONL entry; tampering with any line breaks the chain. This is the compliance asset.
-- **PII** — Presidio redaction at ingestion, before storage.
-- **Secrets** — Vault; nothing hardcoded.
+- **PII** — redaction at ingestion via Presidio **where installed**, with a deterministic
+  regex fallback (email / phone / SSN / card) otherwise, so PII is scrubbed before storage
+  even on the lean image. The active mode is logged at startup.
+- **Secrets** — required secrets come from environment / the platform secret store; per-tenant
+  OAuth credentials use AWS Secrets Manager (local JSON fallback in dev). The bundled
+  HashiCorp Vault runs in **dev mode only and is NOT production-grade** — do not rely on it
+  for production secrets.
 - **Rate limiting** — token bucket per user/IP, thread-safe under concurrency.
 
 ---
@@ -239,12 +247,13 @@ last decade. Governed action is this one.
 | Agents | Custom + LLMAdapter | WorkflowAgent, CriticAgent, ActionExecutor |
 | LLM | Gemini / OpenAI / Anthropic | Pluggable via one adapter, cost-tracked |
 | Relational | PostgreSQL (SQLAlchemy async) | Tenants, skills, versions, runs, feedback |
-| Vector | Weaviate | Semantic recall, per-tenant namespaces |
+| Vector | Weaviate | Semantic recall, tenant-scoped via a mandatory `tenant_id` filter |
 | Graph | Neo4j | Entity + relationship knowledge graph |
-| Queue | Celery + Redis | Ingestion, skill discovery, feedback loop |
-| Bus | Kafka | Async event distribution |
-| Secrets | HashiCorp Vault | Credentials, rotation |
-| Observability | Langfuse | Per-call LLM tracing + cost |
-| Ingestion | Presidio + sentence-transformers | PII redaction, chunking, embedding |
+| Queue | Celery + Redis | Ingestion, skill discovery, feedback loop, scheduler |
+| Worker / Beat | Celery worker + beat | Async task execution + recurring governed workflows |
+| Bus | Kafka | Optional; not required for launch (Celery+Redis is the task path) |
+| Secrets | Env / platform store · AWS Secrets Manager (tenant creds) | Bundled Vault is dev-mode only, not production |
+| Observability | Langfuse · `/health/live` + `/health/ready` | LLM tracing + cost; liveness/readiness probes |
+| Ingestion | Presidio (optional) + regex fallback + sentence-transformers | PII redaction (Presidio or regex), chunking, embedding |
 | Infra | Docker Compose / AWS ECS (Terraform) | Local + cloud deployment |
 ```
