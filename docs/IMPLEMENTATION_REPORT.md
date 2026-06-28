@@ -86,26 +86,63 @@ against current code:
 - Not run locally (lean env / no daemon): full `pytest`, `next build`, `docker compose up`.
   These run in CI / Docker. `docker compose config` validates the compose file.
 
+## 7b. Phase 2 — production-readiness pass (verified, this pass)
+
+Each item below was implemented AND covered by tests that run in the lean env (no live infra):
+
+1. **Quarantine lock production semantics — hardened.** `lock.py` no longer silently
+   degrades to Redis-only. If Postgres/asyncpg is unavailable, `acquire`/`release`
+   **fail closed** (raise) unless `QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV=true` in a
+   non-production env (ignored in production). Reads serve Redis → Postgres fallback →
+   repopulate cache; Postgres read errors fail closed. Tests:
+   `tests/test_quarantine_lock_semantics.py` (8 cases: PG-first write, cache read, PG
+   fallback on cache miss, release clears both, prod fail-closed, dev-no-optin fail-closed,
+   dev-optin allowed).
+2. **Alembic migration safety — idempotent.** `0001_initial_schema.py` creates each
+   table/index only if absent (online) and emits a full fresh-DB script offline (`--sql`).
+   Safe against a fresh DB AND an existing `create_all` DB — no `alembic stamp` needed.
+   Verified via `alembic upgrade head --sql` (valid DDL incl. `quarantine_locks`).
+3. **Kafka + ZooKeeper — removed.** Zero producers/consumers in the codebase. Removed both
+   services + volumes from `docker-compose.yml`, the `KAFKA_BROKER` env from backend, the
+   Kafka block from `.env.example`, and `kafka-python` from `requirements.txt`. `docker
+   compose config` validates; services now: frontend, backend, worker, beat, postgres,
+   redis, weaviate, neo4j, vault. Documented in ARCHITECTURE.md ("Why no Kafka").
+4. **Per-tenant LLM budget — enforced.** New `app/services/budget/limiter.py`: monthly cap
+   from `settings.llm_monthly_budget_usd` or `DEFAULT_LLM_MONTHLY_BUDGET_USD` (0 =
+   unlimited). The governed-workflow runner blocks **before any LLM call** when over budget
+   and records a `status="blocked"` audited run. Monthly rollover handled by the single
+   writer (`tasks.accumulate_llm_cost`). Over-budget fails closed; DB-read error fails open.
+   Generic error message (no billing internals). Tests: `tests/test_budget.py` (12 cases).
+5. **Weaviate isolation — regression-tested + honest docs.** Isolation remains property-filter
+   (single `Document` collection, mandatory required `tenant_id` arg, empty fails closed).
+   Added `tests/test_weaviate_tenant_filter.py` (4 cases: filter carries caller's tenant,
+   tenant B can't see tenant A rows, empty fails closed without querying, signature requires
+   tenant_id). Docs unchanged in claim (already honest) — native MT still a follow-up.
+6. **Observability minimum.** Optional Sentry via `SENTRY_DSN` (`app/services/observe/sentry.py`,
+   no-op without DSN/sdk). Structured decision logs at the Tier-0 contradiction gate, budget
+   blocks, and quarantine ops. `/health/live` + `/health/ready` kept. Prometheus/OTel
+   explicitly NOT wired (documented as next step).
+7. **DB pool sizing — env-configurable.** `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` (were hardcoded).
+
+Test count: **185 passed, 1 skipped** (was 162). Frontend: `next build` succeeds (all 14
+routes prerender); `npm run lint` has 5 pre-existing errors from Next 16's strict
+react-hooks rules in files untouched this pass (non-blocking — build is green).
+
 ## 8. What still remains (honest follow-ups)
 
-These need live infrastructure to implement and verify safely, so they are **not** claimed
-as done:
+These need live infrastructure or are out of this pass's scope:
 
 - **Weaviate native multi-tenancy** (per-tenant shards) — current isolation is property-filter
-  level; verifying a rewrite needs a live Weaviate. (`test_integration_tenant_isolation.py`
-  exists for the property-filter behavior.)
-- ~~**Quarantine lock source-of-truth in Postgres**~~ — **Done (pass 2)**: `QuarantineLock`
-  ORM model added, `lock.py` rewritten to write Postgres first (asyncpg, lazy-imported so
-  lean env degrades gracefully to Redis-only) and read Redis → Postgres fallback. Fail-closed
-  on Postgres errors. Initial Alembic migration `0001_initial_schema.py` added.
-- **Observability**: structured logging exists; metrics (Prometheus/OTel) and Sentry are not
-  wired — readiness/liveness probes added this pass.
-- **Per-tenant LLM budgets / rate caps** — cost is tracked (`accumulated_llm_cost`); hard
-  budget enforcement is not yet implemented.
+  level (now regression-tested); verifying a rewrite needs a live Weaviate.
+- **Metrics (Prometheus/OpenTelemetry)** — structured logs + optional Sentry are wired; a
+  `/metrics` exporter is the documented next step.
 - **API/worker image split** + Terraform autoscaling (`desired_count=1` today).
 - **Token refresh** for executor OAuth providers (refresh_token stored; refresh-on-401 not
   wired).
-- **Kafka/Zookeeper** can be dropped from the launch compose (Celery+Redis carries the work).
+- **Per-tenant API rate limits** (per-user rate limiting exists; per-tenant LLM *budget* now
+  enforced — a per-tenant request-rate quota is the remaining piece).
+- **Frontend lint cleanup** — 5 pre-existing `react-hooks` errors (Next 16 strict rules);
+  non-blocking but worth a dedicated quality pass.
 
 ## 9. Git
 

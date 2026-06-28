@@ -67,9 +67,16 @@ exactly what it did and why is a category of its own.
 │  → Weaviate upsert + Neo4j entity extraction   │  │  cost accounting  │
 └───────────────────────────────────────────────┘  └──────────────────┘
                                                             ▲
-                                          Kafka (optional bus — Celery+Redis carries the task path)
+                                          Celery + Redis carries the async task path
                                           Vault (dev-mode only) · Langfuse (LLM traces)
 ```
+
+> **Why no Kafka.** Earlier drafts shipped Kafka + ZooKeeper as a "message bus."
+> Nothing in the codebase ever produced to or consumed from it — the async path
+> is Celery + Redis. Dead infrastructure is a liability (attack surface, cost,
+> false complexity), so both were removed from the launch stack. If a true event
+> bus is needed later, add the services back **and wire a real producer/consumer
+> first**.
 
 ---
 
@@ -130,6 +137,20 @@ The **CriticAgent** is the safety core: a separate model pass, deterministic, th
 veto the worker. High-risk or unapproved actions never auto-execute — they route to the
 human approval queue in the frontend. That is what makes autonomous action safe enough
 to sell to a regulated enterprise.
+
+Before any LLM reasoning, two deterministic gates run first:
+
+- **Quarantine veto (Contradiction Handshake).** When ingestion detects that a merged
+  change contradicts an active SOP, the affected skill is locked. The lock's **source of
+  truth is Postgres** (`quarantine_locks`), with Redis as a fast-read cache — so a lock
+  survives Redis restart/eviction and is never silently lost. If Postgres is unavailable
+  the lock **fails closed** (it refuses to place a Redis-only safety lock; a dev-only
+  escape hatch exists but is ignored in production). The CriticAgent reads the lock before
+  every action and unconditionally vetoes a locked skill until a human reconciles it.
+- **Per-tenant LLM budget.** Governed runs check the tenant's monthly spend against its
+  budget and are **blocked before any LLM call** when over, so one tenant cannot run up an
+  unbounded bill or starve others. Over-budget fails closed (block); a DB read error fails
+  open (allow) so a transient blip is not an outage.
 
 ---
 
@@ -246,14 +267,15 @@ last decade. Governed action is this one.
 | API | FastAPI (async) | Routes, middleware stack, agent orchestration |
 | Agents | Custom + LLMAdapter | WorkflowAgent, CriticAgent, ActionExecutor |
 | LLM | Gemini / OpenAI / Anthropic | Pluggable via one adapter, cost-tracked |
-| Relational | PostgreSQL (SQLAlchemy async) | Tenants, skills, versions, runs, feedback |
-| Vector | Weaviate | Semantic recall, tenant-scoped via a mandatory `tenant_id` filter |
+| Relational | PostgreSQL (SQLAlchemy async) | Tenants, skills, versions, runs, feedback, **quarantine locks** |
+| Vector | Weaviate | Semantic recall, tenant-scoped via a mandatory `tenant_id` filter (property-level, not native MT) |
 | Graph | Neo4j | Entity + relationship knowledge graph |
 | Queue | Celery + Redis | Ingestion, skill discovery, feedback loop, scheduler |
 | Worker / Beat | Celery worker + beat | Async task execution + recurring governed workflows |
-| Bus | Kafka | Optional; not required for launch (Celery+Redis is the task path) |
+| Quarantine lock | Postgres (source of truth) + Redis cache | Contradiction-handshake safety veto; fails closed without Postgres |
+| Cost control | Per-tenant monthly LLM budget | Governed runs blocked before LLM spend when over budget |
 | Secrets | Env / platform store · AWS Secrets Manager (tenant creds) | Bundled Vault is dev-mode only, not production |
-| Observability | Langfuse · `/health/live` + `/health/ready` | LLM tracing + cost; liveness/readiness probes |
+| Observability | Langfuse · `/health/live` + `/health/ready` · structured logs · Sentry (optional) | LLM tracing; liveness/readiness; error tracking. Prometheus/OTel NOT yet wired |
 | Ingestion | Presidio (optional) + regex fallback + sentence-transformers | PII redaction (Presidio or regex), chunking, embedding |
 | Infra | Docker Compose / AWS ECS (Terraform) | Local + cloud deployment |
 ```

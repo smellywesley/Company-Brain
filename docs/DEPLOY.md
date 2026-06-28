@@ -46,13 +46,19 @@ Use the two values for `SKILL_SIGNING_KEY` and `AUDIT_HMAC_SECRET`.
    - `OIDC_ISSUER`, `OIDC_AUDIENCE`
    - `POSTGRES_*`, `CELERY_BROKER_URL`, `WEAVIATE_URL`/`WEAVIATE_API_KEY`, `NEO4J_*`
    - `LLM_PROVIDER`, `LLM_API_KEY`
+   - `DEFAULT_LLM_MONTHLY_BUDGET_USD` — per-tenant monthly LLM cap (0 = unlimited; override per tenant via `settings.llm_monthly_budget_usd`)
+   - `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` — size to your Postgres connection cap (see Observability/scale notes)
+   - `SENTRY_DSN` (optional) — error tracking; requires `sentry-sdk` in the image
+   - **Do NOT set** `QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV` (dev-only; safety locks require Postgres and it is ignored in prod anyway)
    - `BACKEND_URL` = the Railway public URL (set after first deploy, then redeploy)
    - `FRONTEND_ORIGIN` = the Vercel URL (Step 8)
 3. **Add a second Railway service** (same image, **same env vars as the API**) for the Celery worker — start command `celery -A app.worker:celery_app worker -l info`, run from `backend/` (use the colon form; the dotted form is ambiguous to Celery's resolver). Without it, ingestion/synthesis tasks enqueue but never run. (Compose users: the `worker` service is already wired in `docker-compose.yml`.)
    - **Add a third service for the scheduler (Celery beat)** — start command `celery -A app.worker:celery_app beat -l info -s /tmp/celerybeat-schedule`, needs only `CELERY_BROKER_URL`. It emits the every-60s scheduler tick that runs due recurring workflows (Analyst digests, monitors). **Run exactly one beat replica** — two would double-fire every schedule. Without it, scheduled workflows never trigger (manual `/workflow/{name}` still works). (Compose users: the `beat` service is already wired in `docker-compose.yml`.)
-4. **Run migrations** (Alembic owns the schema). One-off from `backend/` against the prod DB: first time, generate + commit the initial revision —
-   `DATABASE_URL=<supabase-url> alembic revision --autogenerate -m "initial schema"`, then on every deploy `DATABASE_URL=<supabase-url> alembic upgrade head`.
-5. Confirm `GET https://<railway>/health` → 200.
+4. **Run migrations** (Alembic owns the schema). An initial revision `0001_initial_schema.py` is **already committed** (covers all tables incl. `quarantine_locks`), so you do **not** need `alembic revision --autogenerate` first — just run, from `backend/` against the prod DB:
+   `DATABASE_URL=<supabase-url> alembic upgrade head`.
+   - The initial migration is **idempotent**: it creates each table/index only if absent, so it is safe whether the DB is fresh OR was previously bootstrapped via `create_all` in dev (no manual `alembic stamp head` needed). Verify with `alembic current` (should print `0001 (head)`).
+   - Generate a `--sql` preview for DBA review without a DB: `DATABASE_URL=… alembic upgrade head --sql`.
+5. Confirm `GET https://<railway>/health/live` → 200 and `GET https://<railway>/health/ready` → 200 (readiness checks Postgres + Redis; returns 503 if a required dep is down).
 
 ## Step 8 — Frontend (Vercel)
 1. vercel.com → New Project → import repo → **Root Directory = `frontend`** (Next.js auto-detected).
@@ -78,5 +84,15 @@ Use the two values for `SKILL_SIGNING_KEY` and `AUDIT_HMAC_SECRET`.
 ## Rollback
 Vercel and Railway retain previous deploys — promote the last good one on failure.
 
+## Observability
+- **Health:** `GET /health/live` (liveness — process up) and `GET /health/ready` (readiness — Postgres `SELECT 1` + Redis ping; 503 when a required dep is down so the LB drains the replica without killing it). Legacy `GET /health` kept for back-compat.
+- **Structured logs:** decision points log structured lines — quarantine acquire/release (`quarantine:<tenant>:<skill>`), Tier-0 contradiction decisions (`contradiction.tier0 …`), per-tenant budget blocks (`LLM budget BLOCK …`), and external-provider retry/failure (LLM adapter). Ship stdout to your platform log drain.
+- **Error tracking (optional):** set `SENTRY_DSN` (and add `sentry-sdk` to the image) to enable Sentry. No DSN = disabled, logged at startup. PII is never sent (`send_default_pii=False`).
+- **Metrics (next step, NOT yet wired):** Prometheus / OpenTelemetry are **not** implemented. The honest current state is structured logs + Sentry. Add an OTel exporter / `/metrics` endpoint when you need dashboards — tracked in `docs/IMPLEMENTATION_REPORT.md`.
+
+## Per-tenant cost controls
+- Spend accrues per calendar month in `tenant.settings.accumulated_llm_cost` (rolled over by `tasks.accumulate_llm_cost`).
+- Set a cap with `DEFAULT_LLM_MONTHLY_BUDGET_USD` (global default) or per tenant via `settings.llm_monthly_budget_usd` (0 = unlimited). When a tenant is at/over budget, governed workflow runs are **blocked before any LLM call** and recorded with status `blocked` (audited). Budget reads fail **open** on a DB blip (cost control must not cause an outage); being over a readable budget fails closed.
+
 ## Post-launch scale follow-ups (P1)
-Autoscaling (`desired_count > 1`); per-process `pool_size` vs the managed Postgres connection cap (front with a pooler/PgBouncer); move tasks off public subnets; Terraform remote state if you return to IaC.
+Autoscaling (`desired_count > 1`); per-process `pool_size` (`DB_POOL_SIZE`/`DB_MAX_OVERFLOW`) vs the managed Postgres connection cap (front with a pooler/PgBouncer — Supabase/Railway provide one); move tasks off public subnets; Terraform remote state if you return to IaC.
