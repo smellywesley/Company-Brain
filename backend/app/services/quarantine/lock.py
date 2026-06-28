@@ -57,6 +57,14 @@ def _key(tenant_id: str, skill_id: str) -> str:
     return _KEY_TEMPLATE.format(tenant_id=tenant_id, skill_id=skill_id)
 
 
+def ping() -> bool:
+    """True if the Redis broker answers — for the readiness probe. Never raises."""
+    try:
+        return bool(_get_client().ping())
+    except Exception:  # noqa: BLE001 — readiness must report, not crash
+        return False
+
+
 # ── Synchronous API (Celery worker / ingestion) ──────────────────────────────
 
 def acquire_sync(

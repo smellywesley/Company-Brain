@@ -201,8 +201,51 @@ class ProfileUpdate(BaseModel):
 
 @app.get("/health")
 async def health_check():
-    """Liveness / readiness probe – unauthenticated."""
+    """Legacy combined health probe (kept for back-compat). Prefer /health/live
+    and /health/ready."""
     return {"status": "ok", "version": "0.2.0"}
+
+
+@app.get("/health/live")
+async def health_live():
+    """Liveness: the process is up. No dependency checks — a failure here tells
+    the orchestrator to restart the container."""
+    return {"status": "alive", "version": "0.2.0"}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness: required dependencies are reachable. Returns 503 (not ready)
+    if Postgres or Redis is down, so a load balancer stops routing to this
+    replica without killing it. Weaviate/Neo4j are worker-path deps and are not
+    gated here to keep the API probe lean and fast."""
+    import asyncio as _asyncio
+    from sqlalchemy import text
+
+    checks: dict[str, str] = {}
+    ok = True
+
+    try:
+        async with get_db_session() as session:
+            await session.execute(text("SELECT 1"))
+        checks["postgres"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        checks["postgres"] = f"error: {type(exc).__name__}"
+        ok = False
+
+    try:
+        from app.services.quarantine.lock import ping as redis_ping
+        redis_ok = await _asyncio.to_thread(redis_ping)
+        checks["redis"] = "ok" if redis_ok else "error: no pong"
+        ok = ok and redis_ok
+    except Exception as exc:  # noqa: BLE001
+        checks["redis"] = f"error: {type(exc).__name__}"
+        ok = False
+
+    return JSONResponse(
+        {"status": "ready" if ok else "not_ready", "checks": checks},
+        status_code=200 if ok else 503,
+    )
 
 
 @app.get("/events")
