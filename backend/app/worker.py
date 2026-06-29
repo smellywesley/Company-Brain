@@ -201,6 +201,21 @@ celery_app.conf.beat_schedule = {
 }
 
 
+@celery_app.task(bind=True, name="tasks.ping")
+def ping(self, echo: str = "pong"):
+    """Liveness smoke task. Touches no DB/LLM/external provider — used to prove
+    the enqueue → worker-consume path end to end:
+
+        docker compose exec backend python -c \
+          "from app.worker import ping; print(ping.delay('hi').get(timeout=10))"
+
+    A worker that returns the echoed payload proves the broker + worker loop are
+    healthy without side effects.
+    """
+    logger.info("Celery: ping received (echo=%s)", echo)
+    return {"ok": True, "echo": echo, "task_id": self.request.id}
+
+
 def _run_async(coro):
     """Helper to run async code inside a sync Celery task."""
     loop = asyncio.new_event_loop()
