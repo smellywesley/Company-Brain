@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Building2,
@@ -42,7 +41,6 @@ const SUGGESTED: Record<string, string> = {
 };
 
 export default function OnboardingPage() {
-  const router = useRouter();
   const reduce = useReducedMotion();
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
@@ -50,10 +48,13 @@ export default function OnboardingPage() {
   const [posture, setPosture] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // Default the posture to the industry's suggestion when industry changes.
-  useEffect(() => {
-    if (industry && !posture) setPosture(SUGGESTED[industry] ?? "balanced");
-  }, [industry, posture]);
+  // Selecting an industry also pre-fills the suggested posture (unless the user
+  // already picked one) — done in the handler, not an effect, so there's no
+  // cascading re-render.
+  const selectIndustry = (id: string) => {
+    setIndustry(id);
+    setPosture((p) => p || SUGGESTED[id] || "balanced");
+  };
 
   const canNext = (step === 0 && name.trim()) || (step === 1 && industry) || (step === 2 && posture);
 
@@ -132,7 +133,7 @@ export default function OnboardingPage() {
                       <button
                         key={it.id}
                         type="button"
-                        onClick={() => setIndustry(it.id)}
+                        onClick={() => selectIndustry(it.id)}
                         className={cn(
                           "flex items-start gap-3 rounded-xl border p-3 text-left transition-all",
                           on ? "border-[var(--accent-blue)] bg-[var(--accent-blue-glow)]" : "border-border bg-card/40 hover:border-[var(--accent-blue)]/50",

@@ -39,16 +39,22 @@ export function SnapshotDialog({
   useEffect(() => {
     if (!open || !runId || runId.startsWith("fallback")) return;
     let cancelled = false;
-    setLoading(true);
-    api
-      .getAuditSnapshot(runId)
-      .then((res) => {
+    // State changes live inside the async loader (not the effect body) so the
+    // spinner toggles as part of the fetch lifecycle, not a synchronous render.
+    const load = async () => {
+      setLoading(true);
+      try {
+        const res = await api.getAuditSnapshot(runId);
         if (cancelled) return;
         setSnapshot(res.snapshot);
         setFetchedDigest(res.digest);
-      })
-      .catch(() => {})
-      .finally(() => !cancelled && setLoading(false));
+      } catch {
+        // network failure leaves the existing digest; dialog still renders
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
     return () => {
       cancelled = true;
     };

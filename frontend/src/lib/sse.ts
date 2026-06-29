@@ -5,7 +5,7 @@
  */
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 
 interface SSEState<T = unknown> {
   lastEvent: T | null;
@@ -17,53 +17,60 @@ export function useEventStream<T = unknown>(url: string): SSEState<T> {
   const [lastEvent, setLastEvent] = useState<T | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const retriesRef = useRef(0);
-  const sourceRef = useRef<EventSource | null>(null);
 
-  const connect = useCallback(() => {
+  // Connection lifecycle lives entirely inside the effect so the reconnect
+  // closure can reference `connect` (a hoisted function declaration — no TDZ)
+  // and all per-connection state (retries, source, timer) is scoped to the
+  // active url and torn down on unmount / url change.
+  useEffect(() => {
     if (!url) return;
 
-    try {
-      const source = new EventSource(url);
-      sourceRef.current = source;
+    let retries = 0;
+    let source: EventSource | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
 
-      source.onopen = () => {
-        setIsConnected(true);
-        setError(null);
-        retriesRef.current = 0;
-      };
+    function connect() {
+      if (cancelled) return;
+      try {
+        source = new EventSource(url);
 
-      source.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data) as T;
-          setLastEvent(data);
-        } catch {
-          setLastEvent(event.data as unknown as T);
-        }
-      };
+        source.onopen = () => {
+          setIsConnected(true);
+          setError(null);
+          retries = 0;
+        };
 
-      source.onerror = () => {
-        setIsConnected(false);
-        source.close();
+        source.onmessage = (event) => {
+          try {
+            setLastEvent(JSON.parse(event.data) as T);
+          } catch {
+            setLastEvent(event.data as unknown as T);
+          }
+        };
 
-        // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
-        const delay = Math.min(1000 * Math.pow(2, retriesRef.current), 30000);
-        retriesRef.current += 1;
-        setError(`Disconnected. Reconnecting in ${delay / 1000}s...`);
+        source.onerror = () => {
+          setIsConnected(false);
+          source?.close();
 
-        setTimeout(connect, delay);
-      };
-    } catch (err) {
-      setError(`Failed to connect: ${err}`);
+          // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
+          const delay = Math.min(1000 * Math.pow(2, retries), 30000);
+          retries += 1;
+          setError(`Disconnected. Reconnecting in ${delay / 1000}s...`);
+          timer = setTimeout(connect, delay);
+        };
+      } catch (err) {
+        setError(`Failed to connect: ${err}`);
+      }
     }
-  }, [url]);
 
-  useEffect(() => {
     connect();
     return () => {
-      sourceRef.current?.close();
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      source?.close();
     };
-  }, [connect]);
+  }, [url]);
 
   return { lastEvent, isConnected, error };
 }

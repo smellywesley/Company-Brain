@@ -23,7 +23,8 @@ export default function AnimatedCounter({
   const ref = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
-    setCurrent(0);
+    // No synchronous reset here — the first rAF frame (progress≈0) sets the
+    // value to ~0, so setState stays inside the animation callback.
     const startTime = performance.now();
     const easeOutCubic = (t: number): number => 1 - Math.pow(1 - t, 3);
     let frameId: number;

@@ -1,10 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { useTheme } from "next-themes";
 import { Moon, Sun } from "lucide-react";
 import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
+
+// Client-mount detection without setState-in-effect: the server snapshot is
+// false, the client snapshot is true, so `mounted` flips on hydration. This is
+// the SSR-safe primitive for "am I on the client" and avoids a hydration
+// mismatch when rendering theme-dependent content.
+const noopSubscribe = () => () => {};
 
 /**
  * Apple-style light/dark toggle. Renders a stable placeholder until mounted
@@ -12,9 +18,7 @@ import { Button } from "@/components/ui/button";
  */
 export function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => setMounted(true), []);
+  const mounted = useSyncExternalStore(noopSubscribe, () => true, () => false);
 
   const isDark = resolvedTheme === "dark";
 
