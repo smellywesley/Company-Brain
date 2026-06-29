@@ -78,6 +78,10 @@ Use the two values for `SKILL_SIGNING_KEY` and `AUDIT_HMAC_SECRET`.
 - No Critical/High remaining.
 
 ## Step 11 — Smoke test
+- **Liveness/readiness:** `curl -f https://<api>/health/live` (200) and `curl -f https://<api>/health/ready` (200 when Postgres+Redis are reachable; 503 otherwise).
+- **Worker enqueue→consume** (proves the broker + worker loop are healthy, no side effects):
+  - Compose: `docker compose exec backend python -c "from app.worker import ping; print(ping.delay('hi').get(timeout=10))"` → `{'ok': True, 'echo': 'hi', ...}`.
+  - Railway: run the same one-liner in the API service shell (worker service must be up).
 - Log in (OIDC) → run an approval → feedback round-trip.
 - On a phone: Add to Home Screen → confirm standalone launch + offline shell.
 

@@ -4,7 +4,13 @@
 
 [![CI/CD](https://github.com/your-org/company-brain/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/company-brain/actions)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Security: OWASP](https://img.shields.io/badge/Security-OWASP_Compliant-green.svg)](.github/workflows/ci.yml)
+[![Security: OWASP-informed](https://img.shields.io/badge/Security-OWASP--informed-green.svg)](docs/ARCHITECTURE.md)
+
+> **Release status — release candidate.** Demo / early-pilot ready. Tenant isolation is
+> property-filter based (centralized + regression-tested), **not** native Weaviate
+> multi-tenancy — which is required before regulated-enterprise GA. See
+> [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) for the honest readiness
+> matrix (demo-safe vs. enterprise-pending) and [`docs/DEPLOY.md`](docs/DEPLOY.md) to deploy.
 
 ---
 

@@ -128,21 +128,89 @@ Test count: **185 passed, 1 skipped** (was 162). Frontend: `next build` succeeds
 routes prerender); `npm run lint` has 5 pre-existing errors from Next 16's strict
 react-hooks rules in files untouched this pass (non-blocking — build is green).
 
+## 7c. Phase 3 — release-candidate validation (this pass)
+
+Goal: get the branch to a clean demo/deployable state. No new product features.
+
+1. **Frontend lint — fixed at the root cause (no suppressions).** All 5 Next 16
+   `react-hooks` errors + 1 unused-var warning resolved:
+   - `theme-toggle.tsx`: mount flag via `useSyncExternalStore` (SSR-safe) instead of
+     `useEffect(setMounted)`.
+   - `AnimatedCounter.tsx`: dropped redundant synchronous `setCurrent(0)` (first rAF frame
+     sets it).
+   - `SnapshotDialog.tsx`: `setLoading(true)` moved into the async loader.
+   - `onboarding/page.tsx`: posture default in the industry click handler; removed unused
+     `router`/`useRouter`.
+   - `lib/sse.ts`: connection lifecycle inside the effect with a hoisted `connect`
+     declaration (no self-reference TDZ); dropped `useCallback`/refs.
+   Result: **`npm run lint` clean**, **`next build` passes** (all 14 routes prerender).
+2. **Worker smoke — added `tasks.ping`** (no DB/LLM/external side effects) + 
+   `tests/test_worker_smoke.py` (proves the app imports, the 7 expected tasks register, the
+   broker is configured, and `ping` runs eagerly). Live enqueue→consume command documented
+   in DEPLOY.md and the task docstring.
+3. **Quarantine lock integration test** — `tests/test_integration_quarantine_lock.py`
+   (skipped unless `QUARANTINE_INTEGRATION=1` + live PG/Redis): acquire→PG row + Redis cache,
+   read from cache, Redis-miss→PG fallback→repopulate, release clears both. Mirrors the
+   Weaviate live-test pattern. Unit-level fakes (8 cases) still prove the orchestration.
+4. **Compose validated statically** (daemon unavailable in this env — see below). `docker
+   compose config` renders all 9 services; Redis confirmed `--maxmemory-policy noeviction
+   --appendonly yes`; worker/beat run `celery -A app.worker:celery_app worker|beat`.
+5. **Health endpoints** verified via FastAPI `TestClient`: `/health/live`→200;
+   `/health/ready`→503 with `{postgres,redis}` errors when deps are absent (correct
+   fail-reporting; returns 200 when the stack is up).
+
+**Could NOT run (environment limitation — documented, not faked):**
+- `docker compose up -d --build`: the Docker daemon would not initialize in this environment
+  (Docker Desktop launched but its Linux engine never became reachable after ~12 min across
+  retries). Substitutes run instead: `docker compose config` (full render with a temp
+  `.env`), static service/durability checks, and TestClient health probes.
+- `alembic upgrade head` against live Postgres: no daemon/PG. Substitute: `alembic upgrade
+  head --sql` produces valid DDL for all 7 tables + the version stamp; migration is
+  idempotent by construction.
+
+Test count after Phase 3: **189 passed, 2 skipped** (Weaviate + quarantine live-integration
+tests skip without infra). `python -m compileall backend/app` clean.
+
+## 7d. Weaviate tenant-isolation — release decision
+
+**Current implementation:** property-filter isolation. A single `Document` collection scoped
+by a **mandatory `tenant_id`** on every search, centralized in
+`WeaviateStore.search(query_vector, tenant_id, …)`. `tenant_id` is a required argument (cannot
+be omitted) and an empty value **fails closed** (returns nothing, never scans all tenants).
+The only production call site (`main.py` `/search`) resolves the tenant from the OIDC session
+and passes it; no route issues a raw Weaviate query.
+
+**Safe for controlled demo / early pilot:** **Yes.**
+- Tenant filter is required and centralized; empty fails closed.
+- Regression tests (`test_weaviate_tenant_filter.py`) prove the caller's tenant is always in
+  the filter, tenant B cannot see tenant A's rows, and the signature requires `tenant_id`.
+- A live cross-tenant leak test (`test_integration_tenant_isolation.py`) gates deploy when
+  Weaviate creds are present.
+- Docs do not claim native multi-tenancy.
+
+**Not yet complete for regulated enterprise:**
+- Native Weaviate multi-tenancy (per-tenant shards) is **not** implemented. Property-filter
+  isolation depends on the (now centralized + test-enforced) filter rather than physical
+  separation.
+
+**Decision:** Acceptable for controlled demo and early pilot. Native multi-tenancy is
+**required before regulated-enterprise GA** and remains the top isolation follow-up.
+
 ## 8. What still remains (honest follow-ups)
 
-These need live infrastructure or are out of this pass's scope:
+These need live infrastructure or are out of scope for the release candidate:
 
-- **Weaviate native multi-tenancy** (per-tenant shards) — current isolation is property-filter
-  level (now regression-tested); verifying a rewrite needs a live Weaviate.
+- **Live compose run + live `alembic upgrade head`** — blocked by the local Docker daemon;
+  re-run on a host with a working daemon (or in CI) before first deploy.
+- **Weaviate native multi-tenancy** (per-tenant shards) — required before regulated-enterprise
+  GA (see §7d).
 - **Metrics (Prometheus/OpenTelemetry)** — structured logs + optional Sentry are wired; a
   `/metrics` exporter is the documented next step.
 - **API/worker image split** + Terraform autoscaling (`desired_count=1` today).
 - **Token refresh** for executor OAuth providers (refresh_token stored; refresh-on-401 not
   wired).
-- **Per-tenant API rate limits** (per-user rate limiting exists; per-tenant LLM *budget* now
+- **Per-tenant API rate limits** (per-user rate limiting exists; per-tenant LLM *budget* is
   enforced — a per-tenant request-rate quota is the remaining piece).
-- **Frontend lint cleanup** — 5 pre-existing `react-hooks` errors (Next 16 strict rules);
-  non-blocking but worth a dedicated quality pass.
 
 ## 9. Git
 
