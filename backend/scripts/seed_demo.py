@@ -1,19 +1,29 @@
 """
-Seed the database with demo data so every view shows real, compelling content.
+Seed the database with DEMO data so every view shows real, compelling content.
 
-Creates the `default` tenant, an active Skill, a set of WorkflowRuns spread over
-time (with decision-time context snapshots, critic scores, and reasons), and a
-timestamped Critic policy history (the evolving moat). Re-runnable: it clears
-prior seed rows (triggered_by == "seed_demo") and reinserts fresh data.
+Everything created here is clearly labelled demo data (tenant name carries
+"Demo", every run is tagged ``triggered_by == "seed_demo"``). It is fictional —
+no real customers, secrets, or compliance claims.
+
+Creates the `default` tenant, active Skills, a set of WorkflowRuns spread over
+time (with decision-time context snapshots, critic scores, and reasons), a
+timestamped Critic policy history (the evolving moat), and one contradiction /
+quarantine case (an Enterprise Onboarding SOP locked by a conflicting PR). It is
+re-runnable: it clears prior seed rows (triggered_by == "seed_demo") and
+reinserts fresh data.
+
+SAFETY: refuses to run unless ``ENABLE_DEMO_SEED=true`` so it can never populate
+a production database by accident.
 
 Usage (from backend/ with DATABASE_URL pointing at a running Postgres):
-    python scripts/seed_demo.py
+    ENABLE_DEMO_SEED=true python scripts/seed_demo.py
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +41,11 @@ logger = logging.getLogger("seed_demo")
 
 _SEED_VERSION = "v2"
 _NOW = datetime.now(timezone.utc)
+
+
+def _demo_seed_enabled() -> bool:
+    """Demo seed is off unless explicitly enabled — never runs in prod by accident."""
+    return os.getenv("ENABLE_DEMO_SEED", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _ctx(sources: list[tuple[str, str, str]], graph_facts: list[str], age_min: int) -> dict:
@@ -257,19 +272,28 @@ _TENANT_SETTINGS = {
 
 
 async def seed() -> None:
+    if not _demo_seed_enabled():
+        logger.error(
+            "Refusing to seed: set ENABLE_DEMO_SEED=true to load demo data. "
+            "This guard prevents demo data reaching a production database."
+        )
+        raise SystemExit(2)
+
+    logger.warning("Seeding DEMO data (fictional; clearly labelled). ENABLE_DEMO_SEED is on.")
     await init_db()
 
     async with get_db_session() as session:
-        # 1. Default tenant
+        # 1. Default tenant — name carries "Demo" so the workspace is unmistakably demo data.
         result = await session.execute(select(Tenant).where(Tenant.slug == "default"))
         tenant = result.scalar_one_or_none()
         if tenant is None:
-            tenant = Tenant(name="Acme Corp", slug="default")
+            tenant = Tenant(name="Acme Corp — Demo Workspace", slug="default")
             session.add(tenant)
             await session.flush()
-            logger.info("Created default tenant %s", tenant.id)
+            logger.info("Created demo tenant %s", tenant.id)
         else:
-            logger.info("Using existing default tenant %s", tenant.id)
+            tenant.name = "Acme Corp — Demo Workspace"
+            logger.info("Using existing default tenant %s (relabelled as demo)", tenant.id)
 
         # 2. Refresh tenant settings (policy history / moat + usage)
         tenant.settings = {**(tenant.settings or {}), **_TENANT_SETTINGS}
@@ -333,7 +357,88 @@ async def seed() -> None:
             ))
         logger.info("Created %d sample workflow runs", len(_RUNS))
 
-    logger.info("Seed complete (%s). Open the dashboard to see live data.", _SEED_VERSION)
+        # 6. Contradiction / quarantine case (the Contradiction Handshake demo).
+        #    An "Enterprise Onboarding" SOP is quarantined because a merged PR
+        #    conflicts with it — so the CriticAgent will veto any onboarding
+        #    action until a human reconciles it.
+        onboarding = (await session.execute(
+            select(Skill).where(Skill.tenant_id == tenant.id, Skill.slug == "enterprise-onboarding")
+        )).scalar_one_or_none()
+        if onboarding is None:
+            onboarding = Skill(
+                tenant_id=tenant.id,
+                slug="enterprise-onboarding",
+                name="Enterprise Onboarding",
+                description="SOP for onboarding new enterprise clients (demo).",
+                version=2,
+                status="active",
+                risk_level="high",
+                confidence_score=0.79,
+                definition={
+                    "name": "Enterprise Onboarding",
+                    "description": "Onboard new enterprise clients per the approved runbook.",
+                    "steps": [
+                        {"step_number": 1, "action_name": "provision_workspace", "description": "Create the client workspace"},
+                        {"step_number": 2, "action_name": "assign_csm", "description": "Assign a customer success manager", "requires_human_approval": True},
+                    ],
+                    "guardrails": ["Follow the approved onboarding SOP version only"],
+                },
+                created_by="seed_demo",
+            )
+            session.add(onboarding)
+            await session.flush()
+
+        contradiction_summary = (
+            "PR #842 changes the enterprise provisioning step, conflicting with the "
+            "approved Enterprise Onboarding SOP (step 1)."
+        )
+        # A run that was held because the skill is under contradiction review.
+        session.add(WorkflowRun(
+            tenant_id=tenant.id,
+            workflow_name="enterprise_onboarding",
+            skill_id=onboarding.id,
+            status="pending_review",
+            trigger_data={"account": "Globex", "signal": "New enterprise contract signed"},
+            context_used=_ctx(
+                [
+                    ("notion", "Enterprise Onboarding SOP", "Approved runbook for provisioning new enterprise clients"),
+                    ("github", "PR #842", "Alters the provisioning step referenced by the SOP"),
+                ],
+                ["Enterprise Onboarding -[CONFLICTS_WITH]-> PR:842"],
+                8,
+            ),
+            candidate_action={"action_type": "provision_workspace", "parameters": {"account": "Globex"}, "rationale": "Onboard Globex per SOP."},
+            final_action=None,
+            critic_approved=False,
+            critic_risk_score=1.0,
+            critic_reasons=[f"Skill quarantined — {contradiction_summary}", "Held for human reconciliation"],
+            steps_executed=[{"name": "retrieve", "status": "success"}, {"name": "critic_review", "status": "vetoed"}],
+            audit_trail=[{"event": "quarantine_veto", "summary": contradiction_summary, "at": (_NOW - timedelta(minutes=8)).isoformat()}],
+            triggered_by="seed_demo",
+            created_at=_NOW - timedelta(minutes=8),
+        ))
+        logger.info("Created contradiction case for skill 'Enterprise Onboarding'")
+
+    # 7. Place the durable quarantine lock (Postgres source of truth + Redis
+    #    cache). Best-effort: if Redis/Postgres for the lock module isn't
+    #    reachable, the seeded run above still shows the contradiction — we just
+    #    log a warning rather than fail the whole seed.
+    try:
+        from app.services.quarantine import lock as quarantine
+
+        quarantine.acquire_sync(
+            str(tenant.id),
+            str(onboarding.id),
+            pr_ref="PR #842",
+            summary=contradiction_summary,
+            severity="high",
+            locked_by="seed_demo",
+        )
+        logger.info("Placed quarantine lock on 'Enterprise Onboarding' (skill %s)", onboarding.id)
+    except Exception as exc:  # noqa: BLE001 — lock is a demo nicety, not required
+        logger.warning("Could not place quarantine lock (seed still succeeded): %s", exc)
+
+    logger.info("Seed complete (%s). Open the dashboard to see live demo data.", _SEED_VERSION)
 
 
 if __name__ == "__main__":
