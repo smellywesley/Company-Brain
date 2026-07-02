@@ -138,8 +138,11 @@ async def _pg_acquire(
     locked_by: str,
     ttl_seconds: int | None,
 ) -> None:
+    # NOTE: must be a datetime object, not .isoformat() — asyncpg binds
+    # timestamptz params strictly and raises DataError on strings (caught by
+    # the live CI quarantine test; unit fakes could not see this).
     expires_at = (
-        (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+        (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds))
         if ttl_seconds is not None
         else None
     )

@@ -115,29 +115,36 @@ class _FakeRedis:
         return 1 if self.store.pop(key, None) is not None else 0
 
 
-# These TTL tests exercise the Redis *cache* layer in the lean env (no asyncpg),
-# so they opt into the dev-only Redis-only escape hatch explicitly.
-def test_soft_lock_has_default_ttl(monkeypatch):
-    """A normal quarantine self-heals: set() is called with ex=24h."""
+# These TTL tests exercise the Redis *cache* layer only, so they force the
+# Redis-only dev path deterministically: _asyncpg=None makes the behavior
+# identical whether or not asyncpg happens to be installed (in CI it is, and
+# without this the tests would try to reach a real Postgres on localhost),
+# and the env flag opts into the dev-only escape hatch explicitly. The
+# production fail-closed semantics have their own tests in
+# test_quarantine_lock_semantics.py.
+def _redis_only(monkeypatch) -> "_FakeRedis":
+    monkeypatch.setattr(quarantine, "_asyncpg", None)
     monkeypatch.setenv("QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV", "true")
     fake = _FakeRedis()
     monkeypatch.setattr(quarantine, "_client", fake)
+    return fake
+
+
+def test_soft_lock_has_default_ttl(monkeypatch):
+    """A normal quarantine self-heals: set() is called with ex=24h."""
+    fake = _redis_only(monkeypatch)
     quarantine.acquire_sync("t1", "s1", pr_ref="PR #1", summary="x")
     assert fake.calls[0]["ex"] == quarantine._DEFAULT_TTL_SECONDS == 86_400
 
 
 def test_permanent_lock_opt_in(monkeypatch):
     """ttl_seconds=None makes a permanent lock (no expiry) for confirmed cases."""
-    monkeypatch.setenv("QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV", "true")
-    fake = _FakeRedis()
-    monkeypatch.setattr(quarantine, "_client", fake)
+    fake = _redis_only(monkeypatch)
     quarantine.acquire_sync("t1", "s1", pr_ref="PR #1", summary="x", ttl_seconds=None)
     assert fake.calls[0]["ex"] is None
 
 
 def test_custom_ttl_passthrough(monkeypatch):
-    monkeypatch.setenv("QUARANTINE_LOCK_ALLOW_REDIS_ONLY_DEV", "true")
-    fake = _FakeRedis()
-    monkeypatch.setattr(quarantine, "_client", fake)
+    fake = _redis_only(monkeypatch)
     quarantine.acquire_sync("t1", "s1", pr_ref="PR #1", summary="x", ttl_seconds=3600)
     assert fake.calls[0]["ex"] == 3600

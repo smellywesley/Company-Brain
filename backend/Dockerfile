@@ -17,6 +17,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app code
 COPY . .
 
+# Audit chain (AuditLogMiddleware) writes logs/audit.jsonl — the dir must be
+# writable by the non-root user or every audit write dies with EACCES (seen as
+# repeated PermissionError in the live CI run's backend logs).
+RUN mkdir -p /app/logs && chown -R appuser:appgroup /app/logs
+
 # Switch to non‑root user
 USER appuser
 
