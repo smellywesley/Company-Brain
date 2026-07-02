@@ -6,11 +6,19 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Security: OWASP-informed](https://img.shields.io/badge/Security-OWASP--informed-green.svg)](docs/ARCHITECTURE.md)
 
-> **Release status — release candidate.** Demo / early-pilot ready. Tenant isolation is
-> property-filter based (centralized + regression-tested), **not** native Weaviate
-> multi-tenancy — which is required before regulated-enterprise GA. See
-> [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) for the honest readiness
-> matrix (demo-safe vs. enterprise-pending) and [`docs/DEPLOY.md`](docs/DEPLOY.md) to deploy.
+> **Release status — release candidate.** Readiness tiers (honest):
+> - **Controlled demo-ready** *after the `release-candidate` CI workflow passes* (it boots a
+>   live stack, applies migrations to real Postgres, proves the Celery worker consumes a task
+>   through Redis, and runs the live quarantine-lock test).
+> - **Pilot readiness** requires that live CI green + running the full stack (not just the lean
+>   CI subset) with real managed dependencies.
+> - **Enterprise readiness** requires **native Weaviate multi-tenancy** (isolation today is
+>   property-filter based — centralized + regression-tested, *not* per-tenant shards) and
+>   production observability (Prometheus/OTel). Not claimed today.
+>
+> See [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) for the full readiness
+> matrix and [`docs/DEPLOY.md`](docs/DEPLOY.md) to deploy. **Note:** the remote `main` branch is
+> older/unrelated history — do **not** casually merge this branch into it.
 
 ---
 

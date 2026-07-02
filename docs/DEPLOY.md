@@ -85,6 +85,22 @@ Use the two values for `SKILL_SIGNING_KEY` and `AUDIT_HMAC_SECRET`.
 - Log in (OIDC) → run an approval → feedback round-trip.
 - On a phone: Add to Home Screen → confirm standalone launch + offline shell.
 
+## CI — live release-candidate validation
+`.github/workflows/release-candidate.yml` (triggers: `workflow_dispatch`, `pull_request`, push to the feature branch) runs three jobs:
+- **backend** — `pytest` + `compileall`.
+- **frontend** — `npm ci` → `npm run lint` → `npm run build`.
+- **compose-live** — boots the **lean CI stack** (`docker-compose.ci.yml`: postgres, redis, backend, worker — the subset readiness gates on) and proves the live path that could not run locally (Docker Desktop would not initialize): `alembic upgrade head` + `alembic current` against real Postgres → `curl /health/live` and `/health/ready` (200 with deps live) → enqueue `tasks.ping` and confirm the worker returns it through Redis → `QUARANTINE_INTEGRATION=1` quarantine lock test → `docker compose down -v`.
+
+`docker-compose.ci.yml` is **additive** — the full `docker-compose.yml` (weaviate, neo4j, vault, beat, frontend) is unchanged and remains the local/dev stack.
+
+**Local command surface** (`Makefile`, override the stack with `COMPOSE="docker compose -f docker-compose.ci.yml"`):
+`make test` · `make frontend-check` · `make compose-config` · `make compose-up` · `make migrate` · `make health-check` · `make worker-smoke` · `make quarantine-integration` · `make demo-seed`.
+
+## Demo seed (controlled demo only)
+`make demo-seed` (or `ENABLE_DEMO_SEED=true python scripts/seed_demo.py` in the backend container) loads deterministic, clearly-labelled **fictional** demo data: the "Acme Corp — Demo Workspace" tenant, active skills, workflow runs (approval-queue items + audit trails), a learned critic-policy history, and one **contradiction case** — an "Enterprise Onboarding" SOP quarantined by a conflicting PR (durable lock in Postgres + Redis).
+- **Refuses to run** unless `ENABLE_DEMO_SEED=true` — it can never populate a production DB by accident.
+- No real secrets, no real customers, no compliance claims. Every run is tagged `triggered_by="seed_demo"`.
+
 ## Rollback
 Vercel and Railway retain previous deploys — promote the last good one on failure.
 

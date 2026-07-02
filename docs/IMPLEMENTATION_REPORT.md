@@ -196,12 +196,49 @@ and passes it; no route issues a raw Weaviate query.
 **Decision:** Acceptable for controlled demo and early pilot. Native multi-tenancy is
 **required before regulated-enterprise GA** and remains the top isolation follow-up.
 
+## 7e. Phase 4 — live infrastructure validation + CI + demo seed (this pass)
+
+Goal: move from "green on static checks" to a repeatable proof that the live stack actually
+works. No new product features; no frontend redesign.
+
+1. **Release-candidate CI** — `.github/workflows/release-candidate.yml` (triggers:
+   `workflow_dispatch`, `pull_request`, push to the feature branch). Jobs:
+   - **backend**: `pytest` + `compileall`.
+   - **frontend**: `npm ci` → `npm run lint` → `npm run build`.
+   - **compose-live**: boots `docker-compose.ci.yml`, applies migrations to real Postgres
+     (`alembic upgrade head` + `current`), checks `/health/live` + `/health/ready` (200 with
+     deps live), runs the Celery `tasks.ping` enqueue→consume smoke through Redis, runs the
+     `QUARANTINE_INTEGRATION=1` live lock test, then `docker compose down -v`.
+2. **Lean CI compose** — `docker-compose.ci.yml` (postgres, redis, backend, worker — the exact
+   subset `/health/ready` gates on; Redis keeps `noeviction --appendonly yes`). It is
+   **additive**: the full `docker-compose.yml` is untouched. CI secrets are labelled throwaways.
+3. **Makefile** — `test`, `frontend-check`, `compose-config`, `compose-up`, `migrate`,
+   `health-check`, `worker-smoke`, `quarantine-integration`, `demo-seed` (all call the repo's
+   real commands; `COMPOSE` var overrides the stack).
+4. **Demo seed hardened + extended** — `scripts/seed_demo.py` now **refuses unless
+   `ENABLE_DEMO_SEED=true`** (cannot hit a prod DB by accident), labels the tenant "Acme Corp —
+   Demo Workspace", and adds one **contradiction case**: an "Enterprise Onboarding" SOP
+   quarantined by a conflicting PR (durable lock via the Postgres+Redis lock module, best-effort).
+   The existing refund/retention narrative (which the frontend fallbacks mirror) is preserved.
+
+**Local run results (this pass):** `pytest` 189 passed / 2 skipped · `compileall` clean ·
+frontend `lint` clean + `build` passes (14 routes) · `docker compose config` valid for BOTH
+`docker-compose.yml` and `docker-compose.ci.yml` · demo-seed guard verified (refuses without
+the flag, exit 2, no DB touched).
+
+**Still blocked locally (NOT faked):** `docker compose up`, live `alembic upgrade head`, live
+worker enqueue→consume, and the live quarantine integration — the local Docker daemon would not
+initialize (Docker Desktop launched but its Linux engine never became reachable). **These are
+exactly what the `compose-live` CI job proves** on a runner with a working daemon. Until that job
+has a green run, live validation is "pending CI", not "done".
+
 ## 8. What still remains (honest follow-ups)
 
 These need live infrastructure or are out of scope for the release candidate:
 
-- **Live compose run + live `alembic upgrade head`** — blocked by the local Docker daemon;
-  re-run on a host with a working daemon (or in CI) before first deploy.
+- **Live compose run + live `alembic upgrade head` + worker/quarantine live tests** — now
+  automated by the `compose-live` CI job (`.github/workflows/release-candidate.yml`); it could
+  not run on the local Docker daemon. Confirm a green run of that job before first deploy.
 - **Weaviate native multi-tenancy** (per-tenant shards) — required before regulated-enterprise
   GA (see §7d).
 - **Metrics (Prometheus/OpenTelemetry)** — structured logs + optional Sentry are wired; a
