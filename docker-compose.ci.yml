@@ -1,0 +1,85 @@
+# =============================================================================
+# CI compose — the LEAN subset needed to prove live infrastructure in GitHub
+# Actions. It is NOT a replacement for docker-compose.yml (the full local/dev
+# stack). It includes only what the release-candidate proofs require:
+#
+#   postgres + redis  → migrations, readiness (/health/ready checks only these),
+#                       quarantine lock (PG source of truth + Redis cache)
+#   backend           → migrations, health endpoints, enqueue tasks.ping
+#   worker            → consumes tasks.ping through Redis
+#
+# Weaviate / Neo4j / Vault / beat / frontend are intentionally omitted: the
+# readiness probe does not gate on them and none of the Phase 4 proofs need
+# them. All secret values here are CI-only throwaways (they protect nothing).
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: companybrain
+      POSTGRES_USER: cb_admin
+      POSTGRES_PASSWORD: ci_pg_pw_not_secret
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cb_admin -d companybrain"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    # Match production durability: noeviction (safety locks must not be evicted)
+    # + AOF. Same policy the full stack and managed Redis must use.
+    command: redis-server --requirepass ci_redis_pw_not_secret --maxmemory 256mb --maxmemory-policy noeviction --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "ci_redis_pw_not_secret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      ENVIRONMENT: ci
+      AUTH_BYPASS_DEV: "true"            # CI has no OIDC provider; health/curl paths need reachability
+      AUTO_CREATE_SCHEMA: "false"        # prove Alembic owns the schema (migration is explicit)
+      DATABASE_URL: postgresql+asyncpg://cb_admin:ci_pg_pw_not_secret@postgres:5432/companybrain
+      CELERY_BROKER_URL: redis://:ci_redis_pw_not_secret@redis:6379/0
+      REDIS_URL: redis://:ci_redis_pw_not_secret@redis:6379/0
+      SKILL_SIGNING_KEY: ci-skill-signing-key-not-a-secret-0123456789abcdef
+      AUDIT_HMAC_SECRET: ci-audit-hmac-secret-not-a-secret-0123456789abcdef
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "app.worker:celery_app", "worker", "-l", "info", "--concurrency=2"]
+    environment:
+      ENVIRONMENT: ci
+      DATABASE_URL: postgresql+asyncpg://cb_admin:ci_pg_pw_not_secret@postgres:5432/companybrain
+      CELERY_BROKER_URL: redis://:ci_redis_pw_not_secret@redis:6379/0
+      REDIS_URL: redis://:ci_redis_pw_not_secret@redis:6379/0
+      SKILL_SIGNING_KEY: ci-skill-signing-key-not-a-secret-0123456789abcdef
+      AUDIT_HMAC_SECRET: ci-audit-hmac-secret-not-a-secret-0123456789abcdef
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

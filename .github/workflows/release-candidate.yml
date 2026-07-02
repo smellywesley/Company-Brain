@@ -1,0 +1,113 @@
+name: Release Candidate
+
+# Proves the branch is release-candidate quality: backend tests, frontend
+# lint/build, AND live infrastructure (compose boots, migrations apply to real
+# Postgres, worker consumes a task through Redis, readiness turns 200, quarantine
+# lock works against live PG+Redis). The compose-live job is the proof that could
+# not be run locally (Docker Desktop would not initialize).
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - feature/company-brain-architecture-frontend-polish
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend requirements
+        run: pip install -r requirements.txt
+      - name: pytest
+        run: python -m pytest -q
+      - name: compileall
+        run: python -m compileall app
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install deps (npm ci)
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+
+  compose-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create .env (safe CI placeholders) for full-compose config check
+        run: cp .env.example .env
+
+      - name: Validate full compose config
+        run: docker compose config >/dev/null
+
+      - name: Boot the lean CI stack
+        run: docker compose -f docker-compose.ci.yml up -d --build
+
+      - name: Show container status
+        run: docker compose -f docker-compose.ci.yml ps
+
+      - name: Wait for backend to be healthy
+        run: |
+          for i in $(seq 1 40); do
+            if curl -fsS http://localhost:8000/health/live >/dev/null 2>&1; then
+              echo "backend live after ~$((i*5))s"; exit 0
+            fi
+            sleep 5
+          done
+          echo "backend never became live"; exit 1
+
+      - name: Apply migrations to live Postgres
+        run: |
+          docker compose -f docker-compose.ci.yml exec -T backend alembic upgrade head
+          docker compose -f docker-compose.ci.yml exec -T backend alembic current
+
+      - name: Health — liveness
+        run: curl -f http://localhost:8000/health/live
+
+      - name: Health — readiness (Postgres + Redis live → 200)
+        run: curl -f http://localhost:8000/health/ready
+
+      - name: Celery queue smoke (enqueue tasks.ping → worker consumes via Redis)
+        run: |
+          docker compose -f docker-compose.ci.yml exec -T backend \
+            python -c "from app.worker import ping; r = ping.delay('ci').get(timeout=30); print('ping result:', r); assert r['ok'] and r['echo'] == 'ci'"
+
+      - name: Live quarantine lock integration (real PG + Redis)
+        run: |
+          docker compose -f docker-compose.ci.yml exec -T -e QUARANTINE_INTEGRATION=1 backend \
+            python -m pytest tests/test_integration_quarantine_lock.py -q
+
+      - name: Dump logs (always)
+        if: always()
+        run: |
+          for svc in backend worker postgres redis; do
+            echo "===== $svc ====="
+            docker compose -f docker-compose.ci.yml logs --tail=100 "$svc" || true
+          done
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.ci.yml down -v
