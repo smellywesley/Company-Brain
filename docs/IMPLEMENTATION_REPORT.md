@@ -232,13 +232,41 @@ initialize (Docker Desktop launched but its Linux engine never became reachable)
 exactly what the `compose-live` CI job proves** on a runner with a working daemon. Until that job
 has a green run, live validation is "pending CI", not "done".
 
+## 7f. Phase 5 — green CI + demo package (this pass)
+
+**CI result: ALL THREE JOBS GREEN** — run
+[28581789446](https://github.com/smellywesley/Company-Brain/actions/runs/28581789446) on commit
+`b449ad5`: `backend` ✓ · `frontend` ✓ · `compose-live` ✓. The live proofs are now **observed**,
+not claimed: the stack boots, `alembic upgrade head` applies to real Postgres, `/health/live` and
+`/health/ready` return 200 with deps live, `tasks.ping` is enqueued by the backend and consumed
+by the worker through Redis, and the quarantine-lock integration passes against real
+Postgres + Redis.
+
+The first run ([28563938754](https://github.com/smellywesley/Company-Brain/actions/runs/28563938754))
+failed and was debugged from its logs — three root-cause fixes, none of which weakened tests or
+fail-closed behavior:
+
+1. **Real product bug (found only by live CI):** `lock.py` passed `expires_at` to asyncpg as an
+   ISO string; asyncpg binds `timestamptz` strictly → `DataError`. Fixed to pass a `datetime`.
+   Unit fakes could not catch this — exactly why the live job exists.
+2. **Env-dependent tests:** the `test_detector.py` TTL tests took the Redis-only path locally
+   (no asyncpg) but the real-Postgres path in CI (asyncpg installed) and correctly failed
+   closed against a nonexistent DB. They now pin `_asyncpg=None` — they test the Redis-cache
+   TTL layer; fail-closed production semantics keep their own dedicated tests.
+3. **Audit-chain permission bug:** the backend container logged `PermissionError` on every
+   audit write (`logs/` not writable by the non-root user). Dockerfile now creates
+   `/app/logs` owned by `appuser`.
+
+**Demo package:** `docs/DEMO_RUNBOOK.md` (setup, 7-minute flow, what-not-to-claim, failure
+recovery) and `docs/FOUNDER_DEMO_SCRIPT.md` (~6-minute talk track with honest caveats).
+Demo-seed guard re-verified: `ENABLE_DEMO_SEED=false` → refuses, exit 2, DB untouched.
+
 ## 8. What still remains (honest follow-ups)
 
 These need live infrastructure or are out of scope for the release candidate:
 
-- **Live compose run + live `alembic upgrade head` + worker/quarantine live tests** — now
-  automated by the `compose-live` CI job (`.github/workflows/release-candidate.yml`); it could
-  not run on the local Docker daemon. Confirm a green run of that job before first deploy.
+- **Live compose run + live `alembic upgrade head` + worker/quarantine live tests** — automated
+  by the `compose-live` CI job; see §7f for the first live run's results and fixes.
 - **Weaviate native multi-tenancy** (per-tenant shards) — required before regulated-enterprise
   GA (see §7d).
 - **Metrics (Prometheus/OpenTelemetry)** — structured logs + optional Sentry are wired; a

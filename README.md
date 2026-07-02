@@ -7,9 +7,10 @@
 [![Security: OWASP-informed](https://img.shields.io/badge/Security-OWASP--informed-green.svg)](docs/ARCHITECTURE.md)
 
 > **Release status — release candidate.** Readiness tiers (honest):
-> - **Controlled demo-ready** *after the `release-candidate` CI workflow passes* (it boots a
->   live stack, applies migrations to real Postgres, proves the Celery worker consumes a task
->   through Redis, and runs the live quarantine-lock test).
+> - **Controlled demo-ready** — the `release-candidate` CI workflow is **green** (backend,
+>   frontend, and compose-live: it boots a live stack, applies migrations to real Postgres,
+>   proves the Celery worker consumes a task through Redis, returns 200 readiness, and passes
+>   the live quarantine-lock test).
 > - **Pilot readiness** requires that live CI green + running the full stack (not just the lean
 >   CI subset) with real managed dependencies.
 > - **Enterprise readiness** requires **native Weaviate multi-tenancy** (isolation today is
@@ -17,8 +18,11 @@
 >   production observability (Prometheus/OTel). Not claimed today.
 >
 > See [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) for the full readiness
-> matrix and [`docs/DEPLOY.md`](docs/DEPLOY.md) to deploy. **Note:** the remote `main` branch is
-> older/unrelated history — do **not** casually merge this branch into it.
+> matrix, [`docs/DEPLOY.md`](docs/DEPLOY.md) to deploy, and
+> [`docs/DEMO_RUNBOOK.md`](docs/DEMO_RUNBOOK.md) +
+> [`docs/FOUNDER_DEMO_SCRIPT.md`](docs/FOUNDER_DEMO_SCRIPT.md) to run the controlled demo.
+> **Note:** the remote `main` branch is older/unrelated history — do **not** casually merge
+> this branch into it.
 
 ---
 

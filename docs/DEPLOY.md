@@ -96,6 +96,10 @@ Use the two values for `SKILL_SIGNING_KEY` and `AUDIT_HMAC_SECRET`.
 **Local command surface** (`Makefile`, override the stack with `COMPOSE="docker compose -f docker-compose.ci.yml"`):
 `make test` · `make frontend-check` · `make compose-config` · `make compose-up` · `make migrate` · `make health-check` · `make worker-smoke` · `make quarantine-integration` · `make demo-seed`.
 
+## Controlled demo
+The end-to-end demo flow (setup, 7-minute walkthrough, what not to claim, failure recovery)
+lives in `docs/DEMO_RUNBOOK.md`; the founder talk track is `docs/FOUNDER_DEMO_SCRIPT.md`.
+
 ## Demo seed (controlled demo only)
 `make demo-seed` (or `ENABLE_DEMO_SEED=true python scripts/seed_demo.py` in the backend container) loads deterministic, clearly-labelled **fictional** demo data: the "Acme Corp — Demo Workspace" tenant, active skills, workflow runs (approval-queue items + audit trails), a learned critic-policy history, and one **contradiction case** — an "Enterprise Onboarding" SOP quarantined by a conflicting PR (durable lock in Postgres + Redis).
 - **Refuses to run** unless `ENABLE_DEMO_SEED=true` — it can never populate a production DB by accident.
