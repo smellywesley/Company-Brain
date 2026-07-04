@@ -261,21 +261,62 @@ fail-closed behavior:
 recovery) and `docs/FOUNDER_DEMO_SCRIPT.md` (~6-minute talk track with honest caveats).
 Demo-seed guard re-verified: `ENABLE_DEMO_SEED=false` → refuses, exit 2, DB untouched.
 
+## 7g. Phase 6 — controlled demo execution + pilot-readiness bridge (this pass)
+
+Goal: confirm the docs-only push didn't regress CI, produce the concrete demo-execution
+artifacts (checklist, capture plan), and draw an explicit line between "controlled demo-ready"
+and "pilot-ready" so neither gets overstated. No new product features; no frontend changes.
+
+**CI re-confirmation:** the caveat that `03ad931` (docs-only) triggered an unawaited CI run was
+closed — run [28582152408](https://github.com/smellywesley/Company-Brain/actions/runs/28582152408)
+on `03ad931` is **green** (all 3 jobs), same as `b449ad5`'s
+[28581789446](https://github.com/smellywesley/Company-Brain/actions/runs/28581789446). Checked
+via the **unauthenticated public GitHub REST API only** (`api.github.com/repos/.../actions/runs`,
+no auth header) — no stored token was used, printed, retrieved, or modified, per this phase's
+explicit constraint.
+
+**Local Docker attempt (Phase 6):** tried again — launched Docker Desktop, polled ~2.5 minutes.
+Same result as every prior phase: the daemon never becomes reachable in this dev environment.
+Not faked. This means the live demo flow (stack up → seed → UI verification) has still only
+been **witnessed via GitHub Actions' `compose-live` job**, never on a developer machine in this
+project's history — an explicit, named gap in the new demo checklist rather than a silently
+assumed "it works."
+
+**Demo execution artifacts added** (all cross-checked for the 5 non-negotiable phrases —
+"enterprise-ready", "native Weaviate multi-tenancy" as done, "fully compliant"/certifications
+held, "zero hallucination", unproven customer traction — none found outside "do not claim"
+framing):
+- `docs/DEMO_CHECKLIST.md` — pre-demo technical checklist, demo narrative checklist, what-not-
+  to-claim list, all as literal checkboxes.
+- `docs/DEMO_CAPTURE_PLAN.md` — the 7-minute recording beat sheet, an 8-shot screenshot list,
+  and the `company-brain-demo-7min.mp4` / `company-brain-screenshots/` /
+  `company-brain-demo-notes.md` output convention.
+- `docs/PILOT_READINESS_GAP_REPORT.md` — three classified gap lists (must-fix-before-pilot,
+  must-fix-before-enterprise, can-wait), each item with a why/done-looks-like note. This is the
+  authoritative gap list going forward — README and this report link to it rather than
+  restating it, so it doesn't drift out of sync.
+
+**Parallel execution note:** the three doc files above were produced by three subagents
+dispatched concurrently (user-requested), each given the same verified ground truth (CI run
+IDs/conclusions, confirmed-dead local Docker, exact demo-seed behavior, the 5 non-negotiables)
+so they couldn't contradict each other or invent status. All three outputs were read back and
+grep-checked post-hoc for forbidden phrasing before being trusted.
+
+**Local static re-verification this pass:** `pytest` 189 passed / 2 skipped · `compileall`
+clean · frontend `lint` clean · frontend `build` passes (unchanged route count) · both
+`docker compose config` and `docker compose -f docker-compose.ci.yml config` valid.
+`make health-check` / `make worker-smoke` remain unrunnable locally (no daemon) — this is the
+same, already-documented limitation, not a new one.
+
 ## 8. What still remains (honest follow-ups)
 
-These need live infrastructure or are out of scope for the release candidate:
-
-- **Live compose run + live `alembic upgrade head` + worker/quarantine live tests** — automated
-  by the `compose-live` CI job; see §7f for the first live run's results and fixes.
-- **Weaviate native multi-tenancy** (per-tenant shards) — required before regulated-enterprise
-  GA (see §7d).
-- **Metrics (Prometheus/OpenTelemetry)** — structured logs + optional Sentry are wired; a
-  `/metrics` exporter is the documented next step.
-- **API/worker image split** + Terraform autoscaling (`desired_count=1` today).
-- **Token refresh** for executor OAuth providers (refresh_token stored; refresh-on-401 not
-  wired).
-- **Per-tenant API rate limits** (per-user rate limiting exists; per-tenant LLM *budget* is
-  enforced — a per-tenant request-rate quota is the remaining piece).
+The authoritative, classified gap list now lives in
+**[`docs/PILOT_READINESS_GAP_REPORT.md`](PILOT_READINESS_GAP_REPORT.md)** (must-fix-before-pilot
+/ must-fix-before-enterprise / can-wait) — this section just points there rather than
+duplicating it, so the two don't drift out of sync. Highlights: live full-stack verification
+(Weaviate+Neo4j) on a real Docker host, a live Weaviate cross-tenant test, and a real OAuth
+round-trip gate **pilot**; native Weaviate multi-tenancy, Prometheus/OTel, and API/worker image
+split gate **regulated enterprise**.
 
 ## 9. Git
 

@@ -6,21 +6,33 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Security: OWASP-informed](https://img.shields.io/badge/Security-OWASP--informed-green.svg)](docs/ARCHITECTURE.md)
 
-> **Release status — release candidate.** Readiness tiers (honest):
-> - **Controlled demo-ready** — the `release-candidate` CI workflow is **green** (backend,
->   frontend, and compose-live: it boots a live stack, applies migrations to real Postgres,
->   proves the Celery worker consumes a task through Redis, returns 200 readiness, and passes
->   the live quarantine-lock test).
-> - **Pilot readiness** requires that live CI green + running the full stack (not just the lean
->   CI subset) with real managed dependencies.
-> - **Enterprise readiness** requires **native Weaviate multi-tenancy** (isolation today is
->   property-filter based — centralized + regression-tested, *not* per-tenant shards) and
->   production observability (Prometheus/OTel). Not claimed today.
+> **Release status — release candidate, controlled demo-ready.** Readiness tiers (honest):
+> - **Controlled demo-ready (confirmed).** The `release-candidate` CI workflow is **green on
+>   the latest two commits** — runs
+>   [28581789446](https://github.com/smellywesley/Company-Brain/actions/runs/28581789446)
+>   (`b449ad5`) and
+>   [28582152408](https://github.com/smellywesley/Company-Brain/actions/runs/28582152408)
+>   (`03ad931`) both pass backend, frontend, and compose-live: live stack boot, migrations
+>   against real Postgres, `/health/live`+`/health/ready` returning 200, the Celery worker
+>   consuming a task through Redis, and the live quarantine-lock test. **This has only been
+>   observed in GitHub Actions** — the local dev Docker daemon does not initialize in this
+>   environment, so a live run has not yet been witnessed on a developer machine. Run the demo
+>   yourself on any host where Docker actually works: see
+>   [`docs/DEMO_RUNBOOK.md`](docs/DEMO_RUNBOOK.md),
+>   [`docs/DEMO_CHECKLIST.md`](docs/DEMO_CHECKLIST.md), and
+>   [`docs/FOUNDER_DEMO_SCRIPT.md`](docs/FOUNDER_DEMO_SCRIPT.md).
+> - **Pilot readiness — a bridge, not yet crossed.** Requires the full stack (Weaviate + Neo4j,
+>   not just the lean CI subset) verified live, a live Weaviate cross-tenant isolation test, a
+>   real OAuth provider round-trip, a production secret review, managed Postgres/Redis
+>   validation, and a backup/recovery runbook. Full list:
+>   [`docs/PILOT_READINESS_GAP_REPORT.md`](docs/PILOT_READINESS_GAP_REPORT.md).
+> - **Enterprise readiness — not claimed.** Requires **native Weaviate multi-tenancy**
+>   (isolation today is property-filter based — centralized + regression-tested, *not*
+>   per-tenant shards) and production observability (Prometheus/OTel), among other gaps in the
+>   same gap report.
 >
 > See [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) for the full readiness
-> matrix, [`docs/DEPLOY.md`](docs/DEPLOY.md) to deploy, and
-> [`docs/DEMO_RUNBOOK.md`](docs/DEMO_RUNBOOK.md) +
-> [`docs/FOUNDER_DEMO_SCRIPT.md`](docs/FOUNDER_DEMO_SCRIPT.md) to run the controlled demo.
+> matrix and [`docs/DEPLOY.md`](docs/DEPLOY.md) to deploy.
 > **Note:** the remote `main` branch is older/unrelated history — do **not** casually merge
 > this branch into it.
 
