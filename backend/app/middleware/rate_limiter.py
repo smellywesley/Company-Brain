@@ -8,6 +8,15 @@ are supported out of the box:
 - **default** – general API traffic (100 requests / minute)
 - **workflow** – expensive workflow-execution endpoints (10 requests / minute)
 
+On top of the per-user/IP bucket, requests carrying a tenant claim also
+consume from a per-tenant bucket (``RATE_LIMIT_TENANT_MAX``, default 500/min)
+shared by every user in that tenant. This closes the gap where the per-tenant
+*LLM budget* was enforced (see ``app.services.budget.limiter``) but nothing
+stopped a tenant's aggregate *request rate* from ballooning across many users.
+The tenant bucket is consumed only after the per-user/IP bucket passes, so a
+single over-limit tenant can't starve other tenants, while individual users in
+a healthy tenant still get their own per-user protection too.
+
 When the bucket is empty the middleware returns ``429 Too Many Requests``
 with a ``Retry-After`` header indicating how many seconds the client
 should wait.
@@ -80,6 +89,13 @@ _DEFAULT_TIERS: List[RateLimitTier] = [
     ),
 ]
 
+# Per-tenant request-rate budget (distinct from the per-user/IP tiers above and
+# from the per-tenant *LLM cost* budget in app.services.budget.limiter). Shared
+# across every user belonging to the tenant so one tenant can't starve others,
+# even though each individual user is still also under their own tier bucket.
+_TENANT_MAX = int(os.getenv("RATE_LIMIT_TENANT_MAX", "500"))
+_TENANT_REFILL_RATE = _TENANT_MAX / 60.0
+
 
 # ---------------------------------------------------------------------------
 # Bucket store (in-memory, thread-safe)
@@ -117,6 +133,10 @@ class _Bucket:
         with self._lock:
             if self.tokens >= 1.0:
                 return 0
+            if self.refill_rate <= 0:
+                # A never-refilling bucket (e.g. a max of 0 via env misconfig)
+                # must still 429 cleanly, not 500 on division by zero.
+                return 60
             deficit = 1.0 - self.tokens
             return max(1, int(deficit / self.refill_rate) + 1)
 
@@ -214,6 +234,35 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
     def _is_exempt(self, path: str) -> bool:
         return any(path.startswith(p) for p in self.exempt_paths)
 
+    @staticmethod
+    def _tenant_claim(request: Request) -> Optional[str]:
+        """Return the tenant claim on the request, or ``None`` if absent.
+
+        Unauthenticated traffic (no ``request.state.user``) or a token with no
+        tenant claim has no tenant bucket to check — it's still covered by the
+        per-user/IP bucket above.
+        """
+        user = getattr(request.state, "user", None)
+        return getattr(user, "tenant", None) if user is not None else None
+
+    @staticmethod
+    def _429(client: str, tier_name: str, bucket: "_Bucket") -> JSONResponse:
+        retry_after = bucket.retry_after
+        logger.warning(
+            "Rate limit exceeded: client=%s tier=%s retry_after=%ds",
+            client,
+            tier_name,
+            retry_after,
+        )
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": "Rate limit exceeded. Please slow down.",
+                "retry_after_seconds": retry_after,
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
+
     # ------------------------------------------------------------------
     # Middleware entry-point
     # ------------------------------------------------------------------
@@ -231,21 +280,16 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         bucket = _store.get_or_create(bucket_key, tier.max_tokens, tier.refill_rate)
 
         if not bucket.consume():
-            retry_after = bucket.retry_after
-            logger.warning(
-                "Rate limit exceeded: client=%s tier=%s retry_after=%ds",
-                client,
-                tier.name,
-                retry_after,
-            )
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "detail": "Rate limit exceeded. Please slow down.",
-                    "retry_after_seconds": retry_after,
-                },
-                headers={"Retry-After": str(retry_after)},
-            )
+            return self._429(client, tier.name, bucket)
+
+        # Per-tenant bucket, consumed only after the per-user/IP bucket passes,
+        # so it can't be used to starve a healthy tenant's individual users.
+        tenant_claim = self._tenant_claim(request)
+        if tenant_claim:
+            tenant_key = f"tenant:{tenant_claim}:{tier.name}"
+            tenant_bucket = _store.get_or_create(tenant_key, _TENANT_MAX, _TENANT_REFILL_RATE)
+            if not tenant_bucket.consume():
+                return self._429(f"tenant:{tenant_claim}", tier.name, tenant_bucket)
 
         response = await call_next(request)
         return response
