@@ -22,13 +22,21 @@ logger = logging.getLogger("company_brain.security")
 _PROD_ENVS = {"production", "prod"}
 
 # Known shipped placeholders that must never be accepted as real secrets.
+# Kept in sync with docker-compose.yml `${VAR:-default}` fallbacks and
+# .env.example placeholder values by backend/tests/test_secret_hygiene.py.
 _PLACEHOLDERS = {
     "",
     "change-me",
     "change-me-in-production",
     "change-me-signing-key-minimum-32-chars",
+    "change-me-redis",
+    "change-me-now",
     "dev",
     "test",
+    "dev-only-token",
+    "xoxb-your-token",
+    "ntn_your-key",
+    "ghp_your-token",
 }
 
 
