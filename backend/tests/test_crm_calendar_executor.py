@@ -12,8 +12,9 @@ _TENANT = "11111111-1111-1111-1111-111111111111"
 
 # ── fakes ────────────────────────────────────────────────────────────────
 class _FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code  # post_with_refresh checks this for the 401 path
 
     def raise_for_status(self):
         return None

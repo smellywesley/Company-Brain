@@ -17,6 +17,7 @@ from uuid import UUID
 
 import httpx
 
+from app.services.executors.oauth_http import post_with_refresh
 from app.services.executors.registry import ExecutorRegistry
 from app.services.security.secrets_service import SecretsService
 
@@ -51,14 +52,14 @@ async def calendar_create_event(params: dict) -> dict:
         body["attendees"] = [{"email": e} for e in params["attendees"]]
 
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(
-                f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events",
-                headers={"Authorization": f"Bearer {token}"},
-                json=body,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await post_with_refresh(
+            params["_tenant_id"],
+            "google",
+            f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events",
+            json=body,
+        )
+        resp.raise_for_status()
+        data = resp.json()
     except httpx.HTTPError as exc:
         return {"status": "error", "detail": str(exc)}
     except Exception as exc:  # noqa: BLE001
@@ -87,14 +88,14 @@ async def crm_upsert_contact(params: dict) -> dict:
             properties[field] = params[field]
 
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(
-                "https://api.hubapi.com/crm/v3/objects/contacts",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"properties": properties},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await post_with_refresh(
+            params["_tenant_id"],
+            "hubspot",
+            "https://api.hubapi.com/crm/v3/objects/contacts",
+            json={"properties": properties},
+        )
+        resp.raise_for_status()
+        data = resp.json()
     except httpx.HTTPError as exc:
         return {"status": "error", "detail": str(exc)}
     except Exception as exc:  # noqa: BLE001

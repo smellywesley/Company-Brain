@@ -4,8 +4,9 @@ from app.services.executors import accounting
 
 
 class _FakeResp:
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict, status_code: int = 200):
         self._payload = payload
+        self.status_code = status_code  # post_with_refresh checks this for the 401 path
 
     def raise_for_status(self) -> None:
         pass

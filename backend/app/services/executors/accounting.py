@@ -17,6 +17,7 @@ from uuid import UUID
 
 import httpx
 
+from app.services.executors.oauth_http import post_with_refresh
 from app.services.executors.registry import ExecutorRegistry
 from app.services.security.secrets_service import SecretsService
 
@@ -65,14 +66,15 @@ async def accounting_create_invoice(params: dict) -> dict:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(
-                f"{_BASE}/{realm_id}/invoice",
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                json=body,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await post_with_refresh(
+            params["_tenant_id"],
+            "quickbooks",
+            f"{_BASE}/{realm_id}/invoice",
+            headers={"Accept": "application/json"},
+            json=body,
+        )
+        resp.raise_for_status()
+        data = resp.json()
     except httpx.HTTPError as exc:
         return {"status": "error", "detail": str(exc)}
     except Exception as exc:  # noqa: BLE001
@@ -116,14 +118,15 @@ async def accounting_record_expense(params: dict) -> dict:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(
-                f"{_BASE}/{realm_id}/purchase",
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                json=body,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await post_with_refresh(
+            params["_tenant_id"],
+            "quickbooks",
+            f"{_BASE}/{realm_id}/purchase",
+            headers={"Accept": "application/json"},
+            json=body,
+        )
+        resp.raise_for_status()
+        data = resp.json()
     except httpx.HTTPError as exc:
         return {"status": "error", "detail": str(exc)}
     except Exception as exc:  # noqa: BLE001
