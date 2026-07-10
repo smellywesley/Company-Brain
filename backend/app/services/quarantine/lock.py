@@ -269,6 +269,8 @@ def acquire_sync(
 
     key = _cache_key(tenant_id, skill_id)
     logger.warning("Quarantine lock placed: %s (%s, ttl=%s)", key, pr_ref, ttl_seconds)
+    from app.services.observe import metrics
+    metrics.inc("company_brain_quarantine_acquires_total")
     return key
 
 
@@ -313,6 +315,8 @@ def release_sync(tenant_id: str, skill_id: str) -> bool:
     _redis_delete(tenant_id, skill_id)  # invalidate cache regardless
     if removed:
         logger.info("Quarantine lock released: %s:%s", tenant_id, skill_id)
+        from app.services.observe import metrics
+        metrics.inc("company_brain_quarantine_releases_total")
     return removed
 
 

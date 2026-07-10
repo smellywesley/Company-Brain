@@ -250,6 +250,21 @@ async def health_ready():
     )
 
 
+@app.get("/metrics")
+async def metrics_endpoint():
+    """Counters in the Prometheus text exposition format (stdlib-only).
+
+    NOT a Prometheus/OTel integration — no SDK, no scraper configured; counters
+    are per-process and reset on restart. Groundwork a real Prometheus could
+    scrape later. See app/services/observe/metrics.py.
+    """
+    from starlette.responses import PlainTextResponse
+    from app.services.observe import metrics
+    return PlainTextResponse(
+        metrics.render(), media_type="text/plain; version=0.0.4; charset=utf-8"
+    )
+
+
 @app.get("/events")
 async def events_stream():
     """SSE endpoint for real-time frontend updates."""

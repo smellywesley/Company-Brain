@@ -76,6 +76,7 @@ class _JWKSCache:
 
 DEFAULT_PUBLIC_PATHS: Set[str] = {
     "/health",
+    "/metrics",  # Prometheus-format counters — a scraper can't carry OIDC
     "/docs",
     "/redoc",
     "/openapi.json",

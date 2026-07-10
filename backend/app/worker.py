@@ -162,6 +162,8 @@ async def _run_contradiction_handshake(session, tenant_id_str: str, pr: dict) ->
                 summary=summary,
                 severity=report.get("severity", "high"),
             )
+            from app.services.observe import metrics
+            metrics.inc("company_brain_contradictions_detected_total")
             locked += 1
     finally:
         await llm.close()

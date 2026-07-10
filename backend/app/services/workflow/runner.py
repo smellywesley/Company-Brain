@@ -112,6 +112,9 @@ async def _blocked_run(
         except Exception:  # noqa: BLE001 — recording the block must not raise
             logger.exception("runner: failed to persist blocked run (non-fatal)")
 
+    from app.services.observe import metrics
+    metrics.inc("company_brain_workflow_runs_total", {"status": "blocked"})
+
     return {
         "workflow": workflow_name,
         "status": "blocked",
@@ -216,6 +219,9 @@ async def run_governed_workflow(
 
     elapsed_ms = (time.monotonic() - start) * 1000.0
     verdict = result.critic_verdict
+
+    from app.services.observe import metrics
+    metrics.inc("company_brain_workflow_runs_total", {"status": str(result.status)})
 
     # 4. Persist a tamper-evident record of the run (non-fatal on failure).
     run_id: str | None = None

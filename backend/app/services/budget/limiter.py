@@ -129,4 +129,6 @@ async def enforce_budget(tenant_id: str) -> None:
             "LLM budget BLOCK tenant=%s spent=%.6f budget=%.4f — refusing LLM call",
             tenant_id, status["spent"], status["budget"],
         )
+        from app.services.observe import metrics
+        metrics.inc("company_brain_budget_blocks_total")
         raise BudgetExceededError(tenant_id, status["spent"], status["budget"])
