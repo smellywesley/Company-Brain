@@ -32,7 +32,7 @@ diff, no speculative abstractions, every changed line traces to the task.
 ## Backlog (autonomous — loop may execute)
 | # | Item | Size | Status |
 |---|------|------|--------|
-| 1 | **Key the audit chain**: `services/audit/chain.py` uses unkeyed sha256 — a DB-write attacker can forge it; docs/UI claim "HMAC tamper-evident". Key with existing `AUDIT_HMAC_SECRET`, note the audit_logger/chain distinction, tests prove forgery-without-key fails. | S | pending |
+| 1 | **Key the audit chain**: `services/audit/chain.py` uses unkeyed sha256 — a DB-write attacker can forge it; docs/UI claim "HMAC tamper-evident". Key with existing `AUDIT_HMAC_SECRET`, note the audit_logger/chain distinction, tests prove forgery-without-key fails. | S | **done** (b3ab4f0) |
 | 2 | Landing page conversion: email/demo-CTA capture, founder note, honest security/roadmap blurb on `/welcome`. No redesign. | M | pending |
 | 3 | EU AI Act (Art. 12, 14) + ISO/IEC 42001 mapping doc: each existing mechanism → each requirement, with honest per-row gaps. The audit-ready-reporting story. | M | pending |
 | 4 | Policy-as-code: externalize CriticAgent's hardcoded policy block (incl. "$500 max" default) into versioned per-tenant policy definitions; critic composes prompt from them. | L | pending |
@@ -47,7 +47,7 @@ bigdata.com market analysis (connector unauthenticated).
 ## Cycle log
 | Cycle | Date | Item | Outcome |
 |-------|------|------|---------|
-| — | — | — | (no cycles completed yet) |
+| 1 | 2026-07-04 | #1 audit-chain HMAC | Done — critic approved w/ 1 change (secret reuse ruled intentional + documented); builder implemented; 230 passed / 2 skipped; commit b3ab4f0, pushed; CI will run on push. |
 
 ## In-flight / handoff notes
 None.
