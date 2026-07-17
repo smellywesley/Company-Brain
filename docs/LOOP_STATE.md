@@ -34,7 +34,7 @@ diff, no speculative abstractions, every changed line traces to the task.
 |---|------|------|--------|
 | 1 | **Key the audit chain**: `services/audit/chain.py` uses unkeyed sha256 — a DB-write attacker can forge it; docs/UI claim "HMAC tamper-evident". Key with existing `AUDIT_HMAC_SECRET`, note the audit_logger/chain distinction, tests prove forgery-without-key fails. | S | **done** (b3ab4f0) |
 | 2 | Landing page conversion: email/demo-CTA capture, founder note, honest security/roadmap blurb on `/welcome`. No redesign. | M | **done** (76f8ce7) |
-| 3 | EU AI Act (Art. 12, 14) + ISO/IEC 42001 mapping doc: each existing mechanism → each requirement, with honest per-row gaps. The audit-ready-reporting story. | M | pending |
+| 3 | EU AI Act (Art. 12, 14) + ISO/IEC 42001 mapping doc: each existing mechanism → each requirement, with honest per-row gaps. The audit-ready-reporting story. | M | **done** (19aef17 — critic expanded scope to Art. 9/12/14/26, Art. 15 excluded deliberately) |
 | 4 | Policy-as-code: externalize CriticAgent's hardcoded policy block (incl. "$500 max" default) into versioned per-tenant policy definitions; critic composes prompt from them. | L | pending |
 | 5 | Governance core extraction: `governance/` package exposing critic + keyed chain + quarantine behind a documented, versioned interface (the GaaS seed; budget limiter stays app-coupled). | L | pending |
 | 6 | Slack approval notifications (approvals where work happens; webhook-out only, no new deps). | L | pending |
@@ -49,6 +49,7 @@ bigdata.com market analysis (connector unauthenticated).
 |-------|------|------|---------|
 | 1 | 2026-07-04 | #1 audit-chain HMAC | Done — critic approved w/ 1 change (secret reuse ruled intentional + documented); builder implemented; 230 passed / 2 skipped; commit b3ab4f0, pushed; CI will run on push. |
 | 2 | 2026-07-04 | #2 landing conversion | Done — mailto demo CTA (hero/nav/bottom), founder note, SOC 2 roadmap line. Honesty review caught builder overclaim ("proven in production") → corrected to "proven by tests and live CI runs". Lint+build green, /welcome prerenders. Commit 76f8ce7, pushed. |
+| 3 | 2026-07-17 | #3 compliance mapping | Done — docs/COMPLIANCE_MAPPING.md (Art. 9/12/14/26 + ISO 42001, honest-gap column per row, banned-phrase grep clean). Review fix: builder UNDERclaimed chain testing ("only incidentally") — corrected to cite test_differentiators.py forgery tests. Commit 19aef17, pushed. |
 
 ## In-flight / handoff notes
 None.
