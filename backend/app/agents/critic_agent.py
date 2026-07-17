@@ -16,6 +16,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -194,17 +195,48 @@ class CriticAgent(BaseAgent):
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
             parsed = json.loads(raw)
-        except (json.JSONDecodeError, IndexError):
-            logger.error("CriticAgent: failed to parse LLM response as JSON: %s", response.content[:200])
+        except (json.JSONDecodeError, IndexError, AttributeError):
+            logger.error("CriticAgent: failed to parse LLM response as JSON: %s", str(response.content)[:200])
             return CriticVerdict(
                 approved=False,
                 reasons=["Critic could not parse its own output — defaulting to REJECT for safety"],
                 risk_score=1.0,
             )
 
+        # The model's own verdict fields are untrusted output — validate before
+        # trusting them, same fail-closed posture as the parse failure above.
+        def _anomaly(detail: str) -> CriticVerdict:
+            logger.error("CriticAgent: anomalous verdict from model (%s) — defaulting to REJECT for safety", detail)
+            return CriticVerdict(
+                approved=False,
+                reasons=[f"Critic verdict failed validation ({detail}) — defaulting to REJECT for safety"],
+                risk_score=1.0,
+            )
+
+        if not isinstance(parsed, dict):
+            return _anomaly(f"top-level JSON is {type(parsed).__name__}, not an object")
+
+        approved = parsed.get("approved")
+        if not isinstance(approved, bool):
+            return _anomaly(f"'approved' is {type(approved).__name__}, not a boolean")
+
+        risk_raw = parsed.get("risk_score", 0.5)
+        if isinstance(risk_raw, bool) or not isinstance(risk_raw, (int, float)) or not math.isfinite(risk_raw):
+            return _anomaly(f"'risk_score' is not a finite number: {risk_raw!r}")
+        risk_score = min(1.0, max(0.0, float(risk_raw)))
+        if risk_score != risk_raw:
+            logger.warning("CriticAgent: clamped out-of-range risk_score %r to %s", risk_raw, risk_score)
+
+        reasons = parsed.get("reasons", [])
+        if not (isinstance(reasons, list) and all(isinstance(r, str) for r in reasons)):
+            reasons = []
+        mods = parsed.get("suggested_modifications", {})
+        if not isinstance(mods, dict):
+            mods = {}
+
         return CriticVerdict(
-            approved=parsed.get("approved", False),
-            reasons=parsed.get("reasons", []),
-            risk_score=float(parsed.get("risk_score", 0.5)),
-            suggested_modifications=parsed.get("suggested_modifications", {}),
+            approved=approved,
+            reasons=reasons,
+            risk_score=risk_score,
+            suggested_modifications=mods,
         )
