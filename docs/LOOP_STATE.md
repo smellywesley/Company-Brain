@@ -36,7 +36,7 @@ diff, no speculative abstractions, every changed line traces to the task.
 | 2 | Landing page conversion: email/demo-CTA capture, founder note, honest security/roadmap blurb on `/welcome`. No redesign. | M | **done** (76f8ce7) |
 | 3 | EU AI Act (Art. 12, 14) + ISO/IEC 42001 mapping doc: each existing mechanism → each requirement, with honest per-row gaps. The audit-ready-reporting story. | M | **done** (19aef17 — critic expanded scope to Art. 9/12/14/26, Art. 15 excluded deliberately) |
 | 4 | Policy-as-code: externalize CriticAgent's hardcoded policy block (incl. "$500 max" default) into versioned per-tenant policy definitions; critic composes prompt from them. | L | **done** (4fcfba3) |
-| 7 | Harden critic verdict parsing: `critique()` trusts the model's own `approved`/`risk_score` fields with only a JSON-shape check (builder observation, cycle 4) — clamp risk_score to [0,1], type-check approved, reject-on-anomaly. | S | pending |
+| 7 | Harden critic verdict parsing: `critique()` trusts the model's own `approved`/`risk_score` fields with only a JSON-shape check (builder observation, cycle 4) — clamp risk_score to [0,1], type-check approved, reject-on-anomaly. | S | **done** (802cea6) |
 | 5 | Governance core extraction: `governance/` package exposing critic + keyed chain + quarantine behind a documented, versioned interface (the GaaS seed; budget limiter stays app-coupled). | L | pending |
 | 6 | Slack approval notifications (approvals where work happens; webhook-out only, no new deps). | L | pending |
 
@@ -52,6 +52,14 @@ bigdata.com market analysis (connector unauthenticated).
 | 2 | 2026-07-04 | #2 landing conversion | Done — mailto demo CTA (hero/nav/bottom), founder note, SOC 2 roadmap line. Honesty review caught builder overclaim ("proven in production") → corrected to "proven by tests and live CI runs". Lint+build green, /welcome prerenders. Commit 76f8ce7, pushed. |
 | 3 | 2026-07-17 | #3 compliance mapping | Done — docs/COMPLIANCE_MAPPING.md (Art. 9/12/14/26 + ISO 42001, honest-gap column per row, banned-phrase grep clean). Review fix: builder UNDERclaimed chain testing ("only incidentally") — corrected to cite test_differentiators.py forgery tests. Commit 19aef17, pushed. |
 | 4 | 2026-07-17 | #4 policy-as-code | Done — critic_policy.yaml (v1, fail-closed loader per rbac precedent), _DEFAULT_POLICY dead code removed, policy_version stamped into every governed run audit trail. 5 new tests; 235 passed / 2 skipped. New backlog item #7 spawned from builder observation (verdict-parsing hardening). Commit 4fcfba3, pushed. |
+| 5 | 2026-07-17 | #7 verdict hardening | Done — critique() now fails closed on anomalous model verdicts: approved must be bool, risk_score must be finite numeric (clamped to [0,1] with warning), top-level non-dict / None content → REJECT risk 1.0 (same shape as parse-failure precedent). Deliberate change: numeric-string risk scores now reject, locked by test. Critic subagent confirmed NaN previously flowed unguarded into forecaster + API rendering. 15 new tests; 250 passed / 2 skipped, verified independently. Commit 802cea6, pushed. |
 
 ## In-flight / handoff notes
 None.
+
+## Observations (logged, not built)
+- Cross-field verdict inconsistency (cycle-5 critic ruling, out of scope for #7): downstream
+  gates only on `approved` — a verdict of `approved=true, risk_score=0.95` executes with no
+  risk threshold anywhere in the pipeline. Policy design question (what threshold forces
+  human review regardless of approved?), not parsing. Candidate future backlog item;
+  belongs with #5's interface design if picked up.
