@@ -381,7 +381,7 @@ async def observe_ingest(
     triplets, run the quarantine pre-flight + contradiction synthesis, and return
     the mandated core-graph contract."""
     from app.services.observe.pipeline import observe as run_observe
-    from app.services.quarantine import lock as quarantine_lock
+    from app.governance import quarantine_lock
 
     async with get_db_session() as session:
         tenant = await resolve_tenant(request, session)
@@ -995,7 +995,7 @@ async def get_audit(
     limit = max(1, min(limit, 200))
     async with get_db_session() as session:
         from app.db.repositories.workflow_repo import WorkflowRepo
-        from app.services.audit.chain import build_chain, verify_chain
+        from app.governance import build_chain, verify_chain
 
         tenant = await resolve_tenant(request, session)
         repo = WorkflowRepo(session)
@@ -1016,7 +1016,7 @@ async def get_audit_snapshot(
 ):
     """Time-travel: the decision-time state snapshot for one run."""
     async with get_db_session() as session:
-        from app.services.audit.chain import digest, snapshot_of
+        from app.governance import digest, snapshot_of
 
         run = await _load_run_for_tenant(session, request, run_id)
         snap = snapshot_of(run)

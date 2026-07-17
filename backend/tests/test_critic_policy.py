@@ -81,8 +81,10 @@ async def test_runner_stamps_policy_version(monkeypatch):
             pass
 
     class _FakeCritic:
+        policy_version = 99  # sentinel — distinguishes fake from real permanently
+
         def __init__(self, llm, tenant_rules=None):
-            self.policy_version = 1
+            pass
 
     class _FakeWorkflowAgent:
         def __init__(self, llm, critic, workflow_name, action_executors=None):
@@ -104,7 +106,7 @@ async def test_runner_stamps_policy_version(monkeypatch):
     monkeypatch.setattr(runner, "_match_skill", _match)
     monkeypatch.setattr(runner, "_get_llm", lambda: _DummyLLM())
     monkeypatch.setattr("app.services.budget.enforce_budget", _budget_ok)
-    monkeypatch.setattr("app.agents.critic_agent.CriticAgent", _FakeCritic)
+    monkeypatch.setattr("app.governance.CriticAgent", _FakeCritic)
     monkeypatch.setattr("app.agents.workflow_agent.WorkflowAgent", _FakeWorkflowAgent)
     monkeypatch.setattr("app.services.executors.registry.load_executors", lambda: {})
 
@@ -117,4 +119,4 @@ async def test_runner_stamps_policy_version(monkeypatch):
         persist=False,
     )
 
-    assert result["audit_trail"] == ["did work", "policy_version=1"]
+    assert result["audit_trail"] == ["did work", "policy_version=99"]

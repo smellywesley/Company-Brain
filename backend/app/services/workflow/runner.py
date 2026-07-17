@@ -194,7 +194,7 @@ async def run_governed_workflow(
         )
 
     # 3. Build the agents and run the governed pipeline.
-    from app.agents.critic_agent import CriticAgent
+    from app.governance import CriticAgent
     from app.agents.workflow_agent import WorkflowAgent
     from app.services.executors.registry import load_executors
 
