@@ -217,6 +217,9 @@ async def run_governed_workflow(
     finally:
         await llm.close()
 
+    # Stamp which policy version judged this run, for auditability.
+    result.audit_trail.append(f"policy_version={critic.policy_version}")
+
     elapsed_ms = (time.monotonic() - start) * 1000.0
     verdict = result.critic_verdict
 

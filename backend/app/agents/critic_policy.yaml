@@ -1,0 +1,10 @@
+# Base critic policy — versioned in git. Bump `version` on ANY rule change:
+# the version is stamped into every run's audit trail, so an auditor can tell
+# exactly which policy judged a given action. Per-tenant LEARNED rules are a
+# separate mechanism (tenant.settings["critic_rules"]) appended at runtime —
+# this file is the base policy only; there is deliberately no override/merge
+# layer.
+version: 1
+rules:
+  - "No PII leakage — the action must not expose names, emails, phone numbers, card numbers, SSNs, or other personally identifiable information."
+  - "Financial limit — reject any unapproved financial action above $500."

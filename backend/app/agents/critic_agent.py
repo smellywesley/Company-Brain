@@ -13,10 +13,14 @@ evaluation.  Checks for:
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from app.agents.base_agent import BaseAgent, AgentResult
 from app.agents.llm_adapter import LLMAdapter
@@ -36,42 +40,52 @@ class CriticVerdict:
     suggested_modifications: dict[str, Any] = field(default_factory=dict)
 
 
-# ── Default policy prompt ───────────────────────────────────────────────────
+# ── Base policy loader ───────────────────────────────────────────────────────
 
-_DEFAULT_POLICY = """
-You are the Company Brain Critic Agent — an independent quality‑assurance
-and policy‑compliance reviewer.  You receive a CANDIDATE ACTION produced by
-another agent together with the CONTEXT that was used to generate it.
+_POLICY_PATH = Path(__file__).parent / "critic_policy.yaml"
 
-Your job is to evaluate the candidate and return a JSON object with:
-{
-  "approved": true | false,
-  "reasons": ["<reason 1>", ...],
-  "risk_score": <0.0 – 1.0>,
-  "suggested_modifications": { ... }  // optional
-}
 
-### Rules you MUST enforce
-1. **No PII leakage** – the action must not expose names, emails, phone
-   numbers, credit‑card numbers, SSNs, or any other personally identifiable
-   information.
-2. **Financial limits** – reject any unapproved financial action above the
-   configured limit.
-3. **RBAC compliance** – the action must respect the caller's role and scope.
-4. **Policy adherence** – follow all tenant-specific learned rules supplied
-   in the context.
+@functools.lru_cache(maxsize=1)
+def _load_policy() -> dict[str, Any]:
+    """Load and validate the base critic policy from YAML.
 
-Return ONLY the JSON object. No markdown fences.
-"""
+    Fails closed, like ``rbac.py``: a missing file, unparseable YAML, or a
+    policy lacking a non-empty ``rules`` list or an int ``version`` raises
+    rather than silently falling back to a stale hardcoded policy.
+    """
+    if not _POLICY_PATH.exists():
+        raise FileNotFoundError(f"Critic policy file not found: {_POLICY_PATH}")
+
+    try:
+        with open(_POLICY_PATH, "r", encoding="utf-8") as fh:
+            policy = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Critic policy at {_POLICY_PATH} is not valid YAML: {exc}") from exc
+
+    if not isinstance(policy, dict):
+        raise ValueError(f"Critic policy at {_POLICY_PATH} did not parse to a mapping")
+
+    rules = policy.get("rules")
+    if not isinstance(rules, list) or not rules:
+        raise ValueError(f"Critic policy at {_POLICY_PATH} must have a non-empty 'rules' list")
+
+    version = policy.get("version")
+    if not isinstance(version, int):
+        raise ValueError(f"Critic policy at {_POLICY_PATH} must have an integer 'version'")
+
+    return policy
 
 
 class CriticAgent(BaseAgent):
     """Second‑pass validator that critiques candidate actions."""
 
     def __init__(self, llm: LLMAdapter, tenant_rules: list[str] | None = None) -> None:
-        # Load default static policies
-        policy_docs = "NO PII LEAKAGE\nFinancial Limit: $500 max without approval."
-        
+        # Load the base policy from critic_policy.yaml (fail-closed).
+        policy = _load_policy()
+        version: int = policy["version"]
+        rules_block = "\n".join(f"- {rule}" for rule in policy["rules"])
+        policy_docs = f"## BASE POLICY (v{version})\n{rules_block}"
+
         # Inject dynamically learned rules from feedback calibration
         if tenant_rules:
             learned_block = "\n".join([f"- {rule}" for rule in tenant_rules])
@@ -105,6 +119,7 @@ class CriticAgent(BaseAgent):
             llm=llm_copy,
             system_prompt=system_prompt,
         )
+        self.policy_version: int = version
 
     async def run(self, input_data: dict[str, Any]) -> AgentResult:
         """Convenience wrapper — delegates to ``critique``."""
