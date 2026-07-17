@@ -139,12 +139,17 @@ export default function WelcomePage() {
             <a href="#roles" className="transition-colors hover:text-foreground">Use cases</a>
             <a href="#security" className="transition-colors hover:text-foreground">Security</a>
           </nav>
-          <Link
-            href="/"
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent-blue)] px-3.5 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
-          >
-            Launch app <ArrowRight className="size-4" />
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link href="/" className="hidden text-sm font-medium text-muted-foreground transition-colors hover:text-foreground sm:inline">
+              Open app
+            </Link>
+            <a
+              href="mailto:wesleyong2004@gmail.com?subject=Company%20Brain%20demo%20request"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent-blue)] px-3.5 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+            >
+              Request demo <ArrowRight className="size-4" />
+            </a>
+          </div>
         </div>
       </header>
 
@@ -169,18 +174,18 @@ export default function WelcomePage() {
             audit trail.
           </p>
           <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <Link
-              href="/"
+            <a
+              href="mailto:wesleyong2004@gmail.com?subject=Company%20Brain%20demo%20request"
               className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent-blue)] px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-[color-mix(in_oklab,var(--accent-blue)_30%,transparent)] transition-opacity hover:opacity-90"
             >
-              Open the dashboard <ArrowRight className="size-4" />
-            </Link>
-            <a
-              href="#how"
+              Request a demo <ArrowRight className="size-4" />
+            </a>
+            <Link
+              href="/"
               className="inline-flex items-center gap-2 rounded-xl border border-border bg-card/40 px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:bg-card/70"
             >
-              See how it works
-            </a>
+              Open the dashboard
+            </Link>
           </div>
         </motion.div>
 
@@ -363,7 +368,8 @@ export default function WelcomePage() {
           </h2>
           <p className="mt-4 text-muted-foreground">
             Mechanisms, not badges. Everything below is enforced in code — we don&apos;t claim
-            certifications we don&apos;t hold.
+            certifications we don&apos;t hold. We hold no certifications today — SOC 2 Type I is
+            the near-term roadmap item; everything below is enforced in code you can read.
           </p>
         </Reveal>
         <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -380,6 +386,28 @@ export default function WelcomePage() {
         </div>
       </section>
 
+      {/* Founder note */}
+      <section className="mx-auto max-w-6xl px-5 py-20">
+        <Reveal className="mx-auto max-w-2xl text-center">
+          <SectionLabel>From the founder</SectionLabel>
+          <h2 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
+            Why I built it this way.
+          </h2>
+          <p className="mt-4 text-muted-foreground">
+            I built Company Brain because I kept running into the same gap: tools that
+            retrieve and summarize, then hand the actual work back to a person to go do. And
+            AI that skips that step and just acts on its own can&apos;t be trusted by anyone
+            who has compliance obligations to answer to. My bet is narrow — an independent
+            critic, a human in the loop on anything risky, and a tamper-evident audit trail
+            are what make AI action something you can actually deploy. This is still early —
+            some of it is proven by tests and live CI runs, some of it isn&apos;t proven yet —
+            and I&apos;d rather tell you which is which than oversell it. Every demo we give
+            is shown warts and all.
+          </p>
+          <p className="mt-4 text-sm text-muted-foreground/70">— Wes, founder</p>
+        </Reveal>
+      </section>
+
       {/* CTA */}
       <section className="mx-auto max-w-6xl px-5 pb-24 pt-10">
         <Reveal>
@@ -394,12 +422,20 @@ export default function WelcomePage() {
                 Open the dashboard to explore the live approval queue, critic calibration,
                 and audit trail.
               </p>
-              <Link
-                href="/"
-                className="mt-7 inline-flex items-center gap-2 rounded-xl bg-[var(--accent-blue)] px-6 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
-              >
-                Launch the dashboard <ArrowRight className="size-4" />
-              </Link>
+              <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
+                <a
+                  href="mailto:wesleyong2004@gmail.com?subject=Company%20Brain%20demo%20request"
+                  className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent-blue)] px-6 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                >
+                  Request a demo <ArrowRight className="size-4" />
+                </a>
+                <Link
+                  href="/"
+                  className="inline-flex items-center gap-2 rounded-xl border border-border bg-card/40 px-6 py-3 text-sm font-semibold text-foreground transition-colors hover:bg-card/70"
+                >
+                  Launch the dashboard
+                </Link>
+              </div>
             </div>
           </div>
         </Reveal>
