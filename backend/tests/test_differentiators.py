@@ -144,6 +144,48 @@ def test_chain_detects_tampering():
     assert verify_chain(chain) is False
 
 
+def test_chain_forgery_with_plain_sha256_is_rejected():
+    """A DB-write attacker who tampers a field and recomputes hashes the old
+    (unkeyed) way must not produce a chain that verifies — proves the chain
+    is now keyed, not plain SHA-256."""
+    import hashlib
+
+    chain = build_chain(_runs())
+    chain[1]["status"] = "completed"  # tamper
+
+    prev = chain[0]["entry_hash"]
+    for entry in chain[1:]:
+        entry["prev_hash"] = prev
+        core = {k: entry[k] for k in entry if k != "entry_hash"}
+        from app.services.audit.chain import _canonical
+
+        entry["entry_hash"] = hashlib.sha256((_canonical(core) + prev).encode("utf-8")).hexdigest()
+        prev = entry["entry_hash"]
+
+    assert verify_chain(chain) is False
+
+
+def test_chain_forgery_with_wrong_key_is_rejected():
+    """Recomputing with a guessed/wrong HMAC key must also fail verification."""
+    import hashlib
+    import hmac
+
+    chain = build_chain(_runs())
+    chain[1]["status"] = "completed"  # tamper
+
+    wrong_key = b"attacker-guessed-key-32-bytes-xx"
+    prev = chain[0]["entry_hash"]
+    for entry in chain[1:]:
+        entry["prev_hash"] = prev
+        core = {k: entry[k] for k in entry if k != "entry_hash"}
+        from app.services.audit.chain import _canonical
+
+        entry["entry_hash"] = hmac.new(wrong_key, (_canonical(core) + prev).encode("utf-8"), hashlib.sha256).hexdigest()
+        prev = entry["entry_hash"]
+
+    assert verify_chain(chain) is False
+
+
 def test_snapshot_digest_is_stable_and_content_addressed():
     runs = _runs()
     snap1 = snapshot_of(runs[0])

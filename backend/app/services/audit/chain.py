@@ -6,8 +6,26 @@ Builds a tamper-evident chain over workflow decisions. Each entry:
   - captures the full retrieve -> reason -> propose -> validate -> act trace,
   - embeds a content-addressed digest of the *decision-time state* (the exact
     context / memory subgraph the brain used at that millisecond), and
-  - links to the previous entry via a SHA-256 hash, so altering any past entry
-    breaks every hash after it.
+  - links to the previous entry via a keyed HMAC-SHA256, so altering any past
+    entry breaks every hash after it.
+
+The chain link (``entry_hash``) is HMAC-SHA256, not plain SHA-256: forging or
+recomputing it requires the secret key, which an attacker with only DB write
+access does not have. (``digest()`` / ``snapshot_of()`` stay unkeyed plain
+SHA-256 — that's content addressing for the decision-time snapshot, not a
+tamper-evidence claim.)
+
+This deliberately reuses ``AUDIT_HMAC_SECRET`` — the same secret used by the
+request-level JSONL audit middleware in ``app/middleware/audit_logger.py``.
+Both are the audit trust domain for a single operator; split into a
+dedicated ``AUDIT_CHAIN_HMAC_SECRET`` only if a compliance requirement
+demands independent rotation of the two chains.
+
+In dev, with no env var set, ``require_secret`` returns an ephemeral
+per-process secret (see ``secret_config.py``). That's fine here because the
+chain is always rebuilt and verified fresh from DB rows within one request —
+there's no persisted chain or cross-process verification that a restart
+could break.
 
 This turns the audit log from a text receipt into a provable record of both
 what the AI did and what it knew when it did it (the "time-travel" property).
@@ -16,11 +34,25 @@ Pure and deterministic for testability.
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import hmac
 import json
 from typing import Any
 
+from app.services.security.secret_config import require_secret
+
 GENESIS_HASH = "0" * 64
+
+
+@functools.cache
+def _key() -> bytes:
+    """Lazily-resolved, process-cached HMAC key for the audit chain.
+
+    Lazy so importing this module stays side-effect-free, and cached so the
+    dev "unset secret" warning logs once per process, not once per entry.
+    """
+    return require_secret("AUDIT_HMAC_SECRET", min_length=32).encode()
 
 
 def _canonical(obj: Any) -> str:
@@ -118,7 +150,7 @@ def build_entry(run: Any, seq: int, prev_hash: str) -> dict:
         "steps": _steps_for(run),
         "prev_hash": prev_hash,
     }
-    entry_hash = hashlib.sha256((_canonical(core) + prev_hash).encode("utf-8")).hexdigest()
+    entry_hash = hmac.new(_key(), (_canonical(core) + prev_hash).encode("utf-8"), hashlib.sha256).hexdigest()
     return {**core, "entry_hash": entry_hash}
 
 
@@ -144,7 +176,7 @@ def verify_chain(chain: list[dict]) -> bool:
         if entry.get("prev_hash") != prev:
             return False
         core = {k: entry[k] for k in entry if k != "entry_hash"}
-        recomputed = hashlib.sha256((_canonical(core) + prev).encode("utf-8")).hexdigest()
+        recomputed = hmac.new(_key(), (_canonical(core) + prev).encode("utf-8"), hashlib.sha256).hexdigest()
         if recomputed != entry.get("entry_hash"):
             return False
         prev = entry["entry_hash"]
